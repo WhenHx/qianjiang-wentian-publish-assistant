@@ -1,0 +1,9 @@
+{
+  "mode": "simulation",
+  "host": "127.0.0.1",
+  "port": 8780,
+  "databasePath": "runtime/mock-backend.db",
+  "publicBaseUrl": "http://127.0.0.1:8780",
+  "allowLoopbackMaterialUrls": true,
+  "seedDemoData": true
+}

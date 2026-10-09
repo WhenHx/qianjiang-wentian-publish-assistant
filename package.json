@@ -1,0 +1,23 @@
+{
+  "name": "qianjiang-wentian-publish-assistant",
+  "version": "0.1.0-test",
+  "private": true,
+  "description": "千匠问天 Windows 发布助手（本地模拟对接测试版）",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start:mock": "node src/mock-backend/server.js --config config/mock-backend.development.json",
+    "start:assistant": "node src/assistant/main.js --config config/assistant.development.json",
+    "start:desktop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File apps/desktop-wpf/Assistant.ps1",
+    "dev": "node scripts/dev.js",
+    "test": "node --test tests/*.test.js",
+    "test:unit": "node --test tests/common.test.js tests/dpapi.test.js tests/paths.test.js tests/url-safety.test.js",
+    "test:integration": "node --test tests/mock-backend.test.js tests/assistant-integration.test.js",
+    "build": "node scripts/build.js",
+    "check:secrets": "node scripts/check-no-secrets.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

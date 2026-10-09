@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "platforms": {
+    "douyin": {
+      "displayName": "抖音",
+      "video": true,
+      "title": { "supported": true, "maxLength": 55 },
+      "description": { "supported": true, "maxLength": 1000 },
+      "topics": { "supported": true, "maxCount": 10 },
+      "cover": { "supported": true, "verified": false },
+      "schedule": { "supported": false },
+      "notes": "真实页面选择器未验证；默认停在最终提交前。"
+    },
+    "shipinhao": {
+      "displayName": "视频号",
+      "video": true,
+      "title": { "supported": true, "maxLength": 40 },
+      "description": { "supported": true, "maxLength": 1000 },
+      "topics": { "supported": true, "maxCount": 10 },
+      "cover": { "supported": true, "verified": false },
+      "schedule": { "supported": false },
+      "notes": "真实页面选择器未验证；默认停在最终提交前。"
+    },
+    "kuaishou": {
+      "displayName": "快手",
+      "video": true,
+      "title": { "supported": true, "maxLength": 50 },
+      "description": { "supported": true, "maxLength": 1000 },
+      "topics": { "supported": true, "maxCount": 10 },
+      "cover": { "supported": true, "verified": false },
+      "schedule": { "supported": false },
+      "notes": "真实页面选择器未验证；默认停在最终提交前。"
+    },
+    "xiaohongshu": {
+      "displayName": "小红书",
+      "video": true,
+      "title": { "supported": true, "maxLength": 20 },
+      "description": { "supported": true, "maxLength": 1000 },
+      "topics": { "supported": true, "maxCount": 10 },
+      "cover": { "supported": true, "verified": false },
+      "schedule": { "supported": false },
+      "notes": "真实页面选择器未验证；默认停在最终提交前。"
+    }
+  }
+}

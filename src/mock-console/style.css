@@ -1,0 +1,15 @@
+body { margin: 0; font-family: "Microsoft YaHei", system-ui, sans-serif; background: #f5f7fb; color: #17233d; }
+.simulation { background: #8a1f11; color: white; padding: 10px 16px; font-weight: 700; }
+main { max-width: 1280px; margin: 20px auto; padding: 0 16px; }
+.card { background: white; border: 1px solid #d9e0ea; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(20,40,80,.06); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+label { display: block; margin: 8px 0; font-weight: 600; }
+input, select, textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 4px; padding: 8px; border: 1px solid #bac4d1; border-radius: 6px; }
+button { padding: 8px 12px; margin: 6px 6px 6px 0; border: 0; border-radius: 6px; background: #1f66d1; color: white; cursor: pointer; }
+button.secondary { background: #5b6572; }
+ul { padding-left: 18px; }
+li { margin: 6px 0; }
+.task { border-top: 1px solid #e4e8ef; padding: 10px 0; }
+.status { display: inline-block; padding: 2px 8px; border-radius: 12px; background: #edf3ff; color: #174ea6; font-weight: 700; }
+pre { white-space: pre-wrap; background: #101828; color: #d1e7ff; padding: 12px; border-radius: 8px; max-height: 260px; overflow: auto; }

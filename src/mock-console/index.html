@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>千匠问天模拟测试控制台</title>
+  <link rel="stylesheet" href="/console/style.css">
+</head>
+<body>
+  <header class="simulation">模拟模式：本控制台仅用于本地联调，不是千匠问天生产界面；模拟用户切换不得进入生产版本。</header>
+  <main>
+    <section class="card">
+      <h1>千匠问天发布任务模拟控制台</h1>
+      <label>模拟业务用户
+        <select id="userSelect">
+          <option value="sim-user-a-token">模拟用户 A</option>
+          <option value="sim-user-b-token">模拟用户 B</option>
+        </select>
+      </label>
+      <button id="refreshAll">刷新设备 / 账号 / 素材 / 任务</button>
+      <span id="me"></span>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>1. 确认设备绑定</h2>
+        <p>先在桌面助手首页点击“申请绑定”，把绑定 ID 和 6 位绑定码填到这里确认。</p>
+        <label>绑定 ID <input id="bindingId" placeholder="bind_..."></label>
+        <label>绑定码 <input id="bindingCode" placeholder="6 位数字"></label>
+        <button id="confirmBinding">确认绑定</button>
+      </div>
+
+      <div class="card">
+        <h2>2. 当前用户设备</h2>
+        <ul id="devices"></ul>
+      </div>
+
+      <div class="card">
+        <h2>3. 平台账号</h2>
+        <p>账号由桌面助手添加并同步；这里只展示云端元数据。</p>
+        <ul id="accounts"></ul>
+      </div>
+
+      <div class="card">
+        <h2>4. 上传测试素材</h2>
+        <input id="materialFile" type="file" accept="video/*,application/octet-stream">
+        <button id="uploadMaterial">上传素材</button>
+        <button id="useSample">上传受控测试素材</button>
+        <ul id="materials"></ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>5. 创建发布任务</h2>
+      <div class="form-grid">
+        <label>标题 <input id="title" maxlength="120" value="本地模拟测试视频"></label>
+        <label>平台
+          <select id="platform">
+            <option value="douyin">抖音</option>
+            <option value="shipinhao">视频号</option>
+            <option value="kuaishou">快手</option>
+            <option value="xiaohongshu">小红书</option>
+          </select>
+        </label>
+        <label>账号 <select id="accountSelect"></select></label>
+        <label>设备 <select id="deviceSelect"></select></label>
+        <label>素材 <select id="materialSelect"></select></label>
+        <label>话题（逗号分隔） <input id="topics" value="测试,本地联调"></label>
+      </div>
+      <label>描述 <textarea id="description" rows="4">这是本地模拟后端创建的测试任务，默认不会真实提交到平台。</textarea></label>
+      <button id="createTask">创建任务</button>
+    </section>
+
+    <section class="card">
+      <h2>6. 任务进度 / 人工接管 / 结果</h2>
+      <button id="refreshTasks">刷新任务</button>
+      <div id="tasks"></div>
+    </section>
+
+    <section class="card">
+      <h2>日志</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+  <script src="/console/app.js"></script>
+</body>
+</html>
