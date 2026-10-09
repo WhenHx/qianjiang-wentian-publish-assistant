@@ -8,9 +8,9 @@
     "descriptionInput": "textarea[placeholder*='描述'], [contenteditable='true']",
     "topicInput": "input[placeholder*='话题']",
     "coverButton": "button:has-text('设置封面'), [class*='cover']",
-    "submitButton": "button:has-text('发布'), button:has-text('提交')",
-    "loggedInIndicators": ["发布视频", "内容管理", "创作者服务中心"],
-    "identitySelectors": ["[data-e2e='user-info']", "[class*='unique_id']", "[class*='nickname']"],
+    "submitButton": "button:has-text('发布')",
+    "loggedInIndicators": ["内容管理", "作品发布", "创作者服务中心"],
+    "identitySelectors": ["[class*='unique_id']"],
     "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证", "滑块"],
     "successPatterns": ["发布成功", "已发布", "审核中", "提交成功"],
     "failurePatterns": ["发布失败", "上传失败", "审核不通过"]

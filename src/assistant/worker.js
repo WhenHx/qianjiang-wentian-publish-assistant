@@ -82,6 +82,11 @@ class AssistantWorker {
     }
   }
 
+  async closeAdapter(adapter) {
+    if (!adapter || adapter.borrowedFromLogin) return;
+    try { await adapter.close(); } catch {}
+  }
+
   findLocalAccountForCloudTask(task) {
     const account = this.store.listAccounts().find(item => item.cloud_account_id === task.account_id);
     if (!account) throw new Error(`云端账号 ${task.account_id} 未同步到本机，请先刷新账号`);
@@ -92,12 +97,14 @@ class AssistantWorker {
   async handleTask(task) {
     const localAccount = this.findLocalAccountForCloudTask(task);
     this.store.saveLocalTask({ ...task, account_key: localAccount.account_key });
-    const adapter = createPlatformAdapter(task.platform, {
+    const borrowed = this.loginBrowsers?.get(localAccount.account_key);
+    const adapter = borrowed || createPlatformAdapter(task.platform, {
       automationMode: this.config.automationMode,
       browserName: this.config.browser,
       account: localAccount,
       logger: this.logger
     });
+    if (borrowed) adapter.borrowedFromLogin = true;
     let submitToken = null;
     try {
       await this.progress(task, 'downloading', 10, '开始下载授权素材');
@@ -141,7 +148,7 @@ class AssistantWorker {
       return await this.executeSubmit(task, adapter);
     } catch (error) {
       this.logger.error('任务执行失败', { task_id: task.id, error: error.message });
-      try { await adapter.close(); } catch {}
+      await this.closeAdapter(adapter);
       await this.reportSafely(task, 'failed', {}, { message: error.message, code: error.code || 'worker_failed' }, submitToken);
       this.store.updateLocalTask(task.id, { status: 'failed', last_error: { message: error.message, code: error.code || 'worker_failed' } });
       return { outcome: 'failed', error };
@@ -149,7 +156,7 @@ class AssistantWorker {
   }
 
   async verifyIdentity(task, localAccount, adapter) {
-    const identity = await adapter.checkIdentity();
+    const identity = await (adapter.recheckIdentity ? adapter.recheckIdentity() : adapter.checkIdentity());
     if (!identity || !identity.identity) {
       return { verified: false, code: 'identity_unverifiable', message: '无法从平台页面读取当前账号身份，已阻止继续执行；请人工核对浏览器中登录的账号' };
     }
@@ -281,16 +288,16 @@ class AssistantWorker {
       const submitEvidence = await adapter.submitOnce();
       const result = await adapter.verifyResult();
       await this.reportSafely(task, result.outcome, { submit: submitEvidence, ...(result.evidence || {}) }, result.outcome === 'failed' ? { message: '平台返回失败特征' } : null, submitToken);
-      await adapter.close();
+      await this.closeAdapter(adapter);
       return result;
     } catch (error) {
       if (submitToken) {
         await this.reportSafely(task, 'outcome_unknown', { reason: '提交后发生异常，不能自动二次提交', error: error.message }, { message: error.message }, submitToken);
-        try { await adapter.close(); } catch {}
+        await this.closeAdapter(adapter);
         return { outcome: 'outcome_unknown', error: error.message };
       }
       await this.reportSafely(task, 'failed', { reason: '提交授权或提交前检查失败', error: error.message }, { message: error.message }, null);
-      try { await adapter.close(); } catch {}
+      await this.closeAdapter(adapter);
       return { outcome: 'failed', error: error.message };
     }
   }
@@ -306,7 +313,7 @@ class AssistantWorker {
     const hold = this.heldTasks.get(taskId);
     if (hold) {
       clearInterval(hold.leaseTimer);
-      await hold.adapter.close().catch(() => {});
+      await this.closeAdapter(hold.adapter);
       this.heldTasks.delete(taskId);
     }
     this.store.updateLocalTask(taskId, { status: 'cancelled' });

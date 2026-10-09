@@ -58,6 +58,8 @@ class AssistantApp {
       logger: this.logger
     });
     this.worker = new AssistantWorker({ config, store: this.store, cloud: this.cloud, logger: this.logger });
+    this.openLoginBrowsers = new Map();
+    this.worker.loginBrowsers = this.openLoginBrowsers;
     this.pendingBinding = null;
     this.heartbeatTimer = null;
     this.subjectMismatch = false;

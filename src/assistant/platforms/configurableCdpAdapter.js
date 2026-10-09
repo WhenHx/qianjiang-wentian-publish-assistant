@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { PlatformAdapter } = require('./base');
 const { ManagedBrowser } = require('../browser/cdpClient');
 
@@ -23,6 +24,7 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     if (!this.browser) {
       this.browser = new ManagedBrowser({ browserName: this.context.browserName || 'edge', profileDir: this.context.account.profile_dir, logger: this.context.logger });
       await this.browser.launch(url || this.selectors.loginUrl);
+      await this.browser.waitForReady().catch(() => {});
     } else if (url) {
       await this.browser.navigate(url);
     }
@@ -42,11 +44,35 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
       const text = await browser.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`).catch(() => '');
       if (text) { identity = text.slice(0, 80); break; }
     }
+    if (identity) {
+      this.verifiedSession = { identity, marker: await this.sessionMarker(), verified_at: new Date().toISOString() };
+    }
     return {
       platform: this.context.platform,
       identity,
       url: await browser.currentUrl().catch(() => '')
     };
+  }
+
+  async sessionMarker() {
+    const state = await this.browser.saveCookies();
+    const relevant = (state.cookies || [])
+      .filter(c => /session|sid|uid|passport|token/i.test(c.name))
+      .map(c => `${c.name}=${c.value}`)
+      .sort();
+    return crypto.createHash('sha256').update(relevant.join(';')).digest('hex');
+  }
+
+  async recheckIdentity() {
+    const direct = await this.checkIdentity();
+    if (direct.identity) return { ...direct, direct: true };
+    if (this.verifiedSession && this.browser) {
+      const marker = await this.sessionMarker();
+      if (marker === this.verifiedSession.marker) {
+        return { platform: this.context.platform, identity: this.verifiedSession.identity, direct: false, via: 'session_marker', url: await this.browser.currentUrl().catch(() => '') };
+      }
+    }
+    return { ...direct, identity: null };
   }
 
   async checkLoginState() {
@@ -116,20 +142,31 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
 
   async submitOnce() {
     const browser = await this.ensureBrowser();
-    const texts = ['发布', '提交', '发表'];
-    const clicked = await browser.evaluate(`(() => {
-      const candidates = [...document.querySelectorAll('button,[role=button],input[type=submit]')];
-      const el = candidates.find(item => {
-        const text = (item.innerText || item.value || '').trim();
-        return ${JSON.stringify(texts)}.some(t => text === t || text.includes(t)) && !item.disabled;
-      });
-      if (!el) return false;
-      el.scrollIntoView({ block: 'center' });
-      el.click();
-      return true;
-    })()`);
-    if (!clicked) throw new Error('未找到可点击的最终提交按钮');
-    return { clicked: true, clicked_at: new Date().toISOString() };
+    const candidates = String(this.selectors.submitButton || '').split(',').map(item => item.trim()).filter(Boolean);
+    for (const candidate of candidates) {
+      const hasText = candidate.match(/^button:has-text\(['"](.+)['"]\)$/);
+      let clicked;
+      if (hasText) {
+        clicked = await browser.evaluate(`(() => {
+          const target = ${JSON.stringify(hasText[1])};
+          const el = [...document.querySelectorAll('button,[role=button]')].find(item => (item.innerText || '').trim() === target && !item.disabled);
+          if (!el) return false;
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return true;
+        })()`);
+      } else {
+        clicked = await browser.evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(candidate)});
+          if (!el || el.disabled) return false;
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return true;
+        })()`);
+      }
+      if (clicked) return { clicked: true, selector: candidate, clicked_at: new Date().toISOString() };
+    }
+    throw new Error(`未找到可点击的最终提交按钮（已按配置选择器逐一尝试：${candidates.join(' | ') || '无配置'}）`);
   }
 
   async verifyResult() {

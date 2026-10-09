@@ -158,8 +158,22 @@ class ManagedBrowser {
     throw new Error('未找到浏览器页面目标');
   }
 
-  async navigate(url) {
+  async waitForReady({ timeoutMs = 15000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const state = await this.evaluate('document.readyState').catch(() => '');
+      if (state === 'complete') {
+        await sleep(500);
+        return;
+      }
+      await sleep(300);
+    }
+    throw new Error('页面加载超时');
+  }
+
+  async navigate(url, { timeoutMs = 15000 } = {}) {
     await this.page.send('Page.navigate', { url });
+    await this.waitForReady({ timeoutMs });
   }
 
   async evaluate(expression, { awaitPromise = false, timeoutMs = 30000 } = {}) {
@@ -197,10 +211,16 @@ class ManagedBrowser {
       if (!el) return false;
       el.focus();
       const value = ${JSON.stringify(value)};
-      if (el.isContentEditable) { el.innerText = value; } else { el.value = value; }
+      if (el.isContentEditable) {
+        el.innerText = value;
+      } else {
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+      }
       el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
+      const actual = el.isContentEditable ? el.innerText : el.value;
+      return actual === value;
     })()`);
   }
 
