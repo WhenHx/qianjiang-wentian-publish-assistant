@@ -9,6 +9,7 @@
     "topicInput": "input[placeholder*='话题']",
     "coverButton": "button:has-text('设置封面'), [class*='cover']",
     "submitButton": "button:has-text('发布')",
+    "postSubmitSuccessUrls": ["content/manage"],
     "loggedInIndicators": ["内容管理", "作品发布", "创作者服务中心"],
     "identitySelectors": ["[class*='unique_id']"],
     "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证", "滑块"],

@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { PlatformAdapter } = require('./base');
 const { ManagedBrowser } = require('../browser/cdpClient');
+const { sleep } = require('../../common/retry');
 
 function loadSelectors() {
   return JSON.parse(fs.readFileSync(path.resolve('config/platform-selectors.json'), 'utf8'));
@@ -142,6 +143,7 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
 
   async submitOnce() {
     const browser = await this.ensureBrowser();
+    this.lastSubmitUrl = await browser.currentUrl().catch(() => '');
     const candidates = String(this.selectors.submitButton || '').split(',').map(item => item.trim()).filter(Boolean);
     for (const candidate of candidates) {
       const hasText = candidate.match(/^button:has-text\(['"](.+)['"]\)$/);
@@ -169,15 +171,31 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     throw new Error(`未找到可点击的最终提交按钮（已按配置选择器逐一尝试：${candidates.join(' | ') || '无配置'}）`);
   }
 
-  async verifyResult() {
+  async evidenceExtra() {
+    if (this.selectors.evidenceScreenshot !== true) return {};
+    const screenshot = await this.browser.screenshotBase64().catch(() => null);
+    return screenshot ? { screenshot_png_base64: screenshot } : {};
+  }
+
+  async verifyResult({ timeoutMs = 45000, pollMs = 1000 } = {}) {
     const browser = await this.ensureBrowser();
-    const text = await browser.bodyText();
-    const success = (this.selectors.successPatterns || []).find(item => text.includes(item));
-    const failure = (this.selectors.failurePatterns || []).find(item => text.includes(item));
-    const screenshot = await browser.screenshotBase64();
-    if (failure) return { outcome: 'failed', evidence: { failure_pattern: failure, screenshot_png_base64: screenshot } };
-    if (success) return { outcome: 'submitted', evidence: { success_pattern: success, platform_status: 'accepted_or_reviewing', screenshot_png_base64: screenshot } };
-    return { outcome: 'outcome_unknown', evidence: { reason: '未识别到平台成功或失败特征', screenshot_png_base64: screenshot } };
+    const startUrl = this.lastSubmitUrl || '';
+    const successUrls = this.selectors.postSubmitSuccessUrls || [];
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const url = await browser.currentUrl().catch(() => '');
+      const text = await browser.bodyText();
+      const failure = (this.selectors.failurePatterns || []).find(item => text.includes(item));
+      if (failure) return { outcome: 'failed', evidence: { failure_pattern: failure, url, ...(await this.evidenceExtra()) } };
+      const success = (this.selectors.successPatterns || []).find(item => text.includes(item));
+      if (success) return { outcome: 'submitted', evidence: { success_pattern: success, platform_status: 'accepted_or_reviewing', url, ...(await this.evidenceExtra()) } };
+      if (url && startUrl && url !== startUrl && successUrls.some(pattern => url.includes(pattern))) {
+        return { outcome: 'submitted', evidence: { redirect: url, platform_status: 'redirected_to_manage', ...(await this.evidenceExtra()) } };
+      }
+      await sleep(pollMs);
+    }
+    const url = await browser.currentUrl().catch(() => '');
+    return { outcome: 'outcome_unknown', evidence: { reason: '等待平台结果超时，未识别成功或失败特征', url, ...(await this.evidenceExtra()) } };
   }
 
   async close() { await this.browser?.close(); }

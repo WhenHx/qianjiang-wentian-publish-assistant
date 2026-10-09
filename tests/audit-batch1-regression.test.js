@@ -149,6 +149,53 @@ test('F02：worker 身份读不到或不匹配时阻止执行，无基线时需�
   assert.equal(match.verified, true);
 });
 
+test('F07：verifyResult 等待跳转/结果特征，超时兜底 outcome_unknown', async () => {
+  const account = { account_key: 'localacct_x3', platform: 'douyin', nickname: '结果识别', platform_identity: 'identity-A', profile_dir: 'x' };
+
+  // 跳转识别：前两次仍在编辑页，随后跳到 content/manage
+  const adapterRedirect = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  let urlCalls = 0;
+  adapterRedirect.lastSubmitUrl = 'https://creator.douyin.com/creator-micro/content/post/video';
+  adapterRedirect.browser = {
+    currentUrl: async () => (++urlCalls > 2 ? 'https://creator.douyin.com/creator-micro/content/manage?enter_from=publish' : adapterRedirect.lastSubmitUrl),
+    bodyText: async () => '作品发布 编辑页',
+    saveCookies: async () => ({ cookies: [] }),
+    screenshotBase64: async () => null,
+    evaluate: async () => null
+  };
+  const redirected = await adapterRedirect.verifyResult({ timeoutMs: 5000, pollMs: 50 });
+  assert.equal(redirected.outcome, 'submitted');
+  assert.equal(redirected.evidence.platform_status, 'redirected_to_manage');
+
+  // 失败特征
+  const adapterFail = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  adapterFail.lastSubmitUrl = 'https://creator.douyin.com/creator-micro/content/post/video';
+  adapterFail.browser = {
+    currentUrl: async () => adapterFail.lastSubmitUrl,
+    bodyText: async () => '很抱歉，发布失败，请重试',
+    saveCookies: async () => ({ cookies: [] }),
+    screenshotBase64: async () => null,
+    evaluate: async () => null
+  };
+  const failed = await adapterFail.verifyResult({ timeoutMs: 3000, pollMs: 50 });
+  assert.equal(failed.outcome, 'failed');
+  assert.equal(failed.evidence.failure_pattern, '发布失败');
+
+  // 超时兜底 + 默认不带整页截图
+  const adapterTimeout = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  adapterTimeout.lastSubmitUrl = 'https://creator.douyin.com/creator-micro/content/post/video';
+  adapterTimeout.browser = {
+    currentUrl: async () => adapterTimeout.lastSubmitUrl,
+    bodyText: async () => '编辑页无明显特征',
+    saveCookies: async () => ({ cookies: [] }),
+    screenshotBase64: async () => 'ZmFrZQ==',
+    evaluate: async () => null
+  };
+  const unknown = await adapterTimeout.verifyResult({ timeoutMs: 300, pollMs: 50 });
+  assert.equal(unknown.outcome, 'outcome_unknown');
+  assert.equal(unknown.evidence.screenshot_png_base64, undefined);
+});
+
 test('F02：只读登录检查在浏览器未启动时不打开窗口', async () => {
   const account = { account_key: 'localacct_x2', platform: 'douyin', nickname: '只读测试', platform_identity: null, profile_dir: 'x' };
   const adapter = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
