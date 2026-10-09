@@ -2,12 +2,12 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { LocalStore } = require('./localStore');
+const { LocalStore, subjectKeyFor } = require('./localStore');
 const { CloudClient } = require('./cloudClient');
 const { AssistantWorker } = require('./worker');
 const { Logger, redact } = require('../common/log');
 const { readJsonBody, sendJson, sendError } = require('../common/json');
-const { unauthorized, notFound, badRequest, forbidden } = require('../common/errors');
+const { unauthorized, notFound, badRequest, forbidden, conflict } = require('../common/errors');
 const { requireString, requirePlatform } = require('../common/validation');
 const { randomId } = require('../common/ids');
 const { isAvailable: dpapiAvailable } = require('../common/dpapi');
@@ -35,9 +35,13 @@ class AssistantApp {
     this.logger = new Logger({ dir: config.logDir, name: 'assistant' });
     const dpapiReady = dpapiAvailable();
     this.dpapiReady = dpapiReady;
-    const simulationFallback = config.mode === 'simulation' && config.automationMode === 'simulated' && !dpapiReady;
-    const useInsecureProtector = config.allowInsecureSecretStorage === true || simulationFallback;
-    if (simulationFallback) this.logger.warn('当前沙箱无法使用 DPAPI；仅限 simulated 自动化模式使用显式降级存储，禁止用于真实平台账号');
+    const simulationContext = config.mode === 'simulation' && config.automationMode === 'simulated';
+    if (config.allowInsecureSecretStorage === true && !simulationContext) {
+      throw new Error('allowInsecureSecretStorage 仅允许在 simulation + simulated 模式下使用；生产或真实平台（cdp）模式禁止未加密秘密存储，拒绝启动');
+    }
+    const simulationFallback = simulationContext && !dpapiReady;
+    const useInsecureProtector = simulationContext && (config.allowInsecureSecretStorage === true || simulationFallback);
+    if (useInsecureProtector) this.logger.warn('当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号');
     const secretProtector = useInsecureProtector
       ? {
           protect: value => `insecure-dev:${Buffer.from(String(value), 'utf8').toString('base64')}`,
@@ -59,10 +63,12 @@ class AssistantApp {
   }
 
   async start() {
-    await new Promise(resolve => this.server.listen(this.config.localApiPort || 8781, this.config.localApiHost || '127.0.0.1', resolve));
+    const port = this.config.localApiPort ?? 8781;
+    const host = this.config.localApiHost ?? '127.0.0.1';
+    await new Promise(resolve => this.server.listen(port, host, resolve));
     fs.writeFileSync(path.join(this.config.dataDir, 'runtime.json'), JSON.stringify({
-      port: this.config.localApiPort || 8781,
-      host: this.config.localApiHost || '127.0.0.1',
+      port: this.server.address().port,
+      host,
       token: this.localToken,
       mode: this.config.mode,
       started_at: new Date().toISOString()
@@ -84,7 +90,8 @@ class AssistantApp {
     clearInterval(this.heartbeatTimer);
     const beat = async () => {
       try {
-        await this.cloud.heartbeat(VERSION);
+        const result = await this.cloud.heartbeat(VERSION);
+        this.reconcileSubject(result?.user_id);
         await this.syncAccounts();
       } catch (error) {
         this.logger.warn('心跳或账号同步失败', { error: error.message, code: error.code });
@@ -92,6 +99,31 @@ class AssistantApp {
     };
     beat();
     this.heartbeatTimer = setInterval(beat, this.config.heartbeatIntervalMs || 30000);
+  }
+
+  reconcileSubject(userId) {
+    if (!userId) return;
+    const binding = this.store.getBinding();
+    if (!binding) return;
+    const expected = subjectKeyFor(this.config.serviceUrl, userId);
+    if (!binding.subjectKey) {
+      this.store.setBindingSubject(expected);
+      this.store.adoptSubjectForLegacyRows(expected);
+      this.logger.info('已回填绑定业务主体', { subject_key: expected });
+    } else if (binding.subjectKey !== expected) {
+      this.logger.error('云端业务主体与本地绑定主体不一致，已停止任务执行；请解绑后重新绑定', { expected, actual: binding.subjectKey });
+      this.worker.stop();
+    }
+  }
+
+  async quiesceForBindingChange() {
+    const drained = await this.worker.stopAndDrain({ timeoutMs: 90000 });
+    if (!drained) throw conflict('worker_busy', '仍有任务正在执行，无法安全切换绑定；请等待任务结束后再试');
+    if (this.openLoginBrowsers) {
+      for (const adapter of this.openLoginBrowsers.values()) await adapter.close().catch(() => {});
+      this.openLoginBrowsers.clear();
+    }
+    clearInterval(this.heartbeatTimer);
   }
 
   async syncAccounts() {
@@ -150,7 +182,12 @@ class AssistantApp {
         if (!this.pendingBinding) throw badRequest('no_pending_binding', '没有待确认绑定');
         const result = await this.cloud.pollBinding(this.pendingBinding.binding_id, this.pendingBinding.poll_token);
         if (result.status === 'approved') {
-          this.store.saveBinding({ deviceId: result.device_id, deviceToken: result.device_token, serviceUrl: this.config.serviceUrl });
+          const subjectKey = subjectKeyFor(this.config.serviceUrl, result.user_id);
+          if (this.store.getBinding()) {
+            await this.quiesceForBindingChange();
+            this.store.clearBinding();
+          }
+          this.store.saveBinding({ deviceId: result.device_id, deviceToken: result.device_token, serviceUrl: this.config.serviceUrl, subjectKey });
           this.pendingBinding = null;
           this.worker.start();
           this.startHeartbeat();
@@ -159,20 +196,22 @@ class AssistantApp {
       }
 
       if (pathname === '/local/v1/binding' && req.method === 'DELETE') {
+        await this.quiesceForBindingChange();
         this.store.clearBinding();
-        this.worker.stop();
-        clearInterval(this.heartbeatTimer);
-        return sendJson(res, 200, { ok: true, note: '已清除本机绑定；云端撤销需在业务控制台操作。' });
+        return sendJson(res, 200, { ok: true, note: '已清除本机绑定并停止任务执行；云端撤销需在业务控制台操作。旧主体账号数据保留但与新绑定隔离。' });
       }
 
       if (pathname === '/local/v1/accounts' && req.method === 'GET') return sendJson(res, 200, { accounts: this.store.listAccounts() });
 
       if (pathname === '/local/v1/accounts' && req.method === 'POST') {
+        const binding = this.store.getBinding();
+        if (!binding) throw conflict('not_bound', '设备尚未绑定，不能添加平台账号');
         const body = await readJsonBody(req);
         const account = this.store.createAccount({
           platform: requirePlatform(body.platform),
           nickname: requireString(body.nickname, 'nickname', { max: 120 }),
-          capabilities: capabilities().platforms[requirePlatform(body.platform)] || {}
+          capabilities: capabilities().platforms[requirePlatform(body.platform)] || {},
+          subjectKey: binding.subjectKey
         });
         const sync = await this.syncAccounts().catch(error => ({ sync_error: error.message }));
         return sendJson(res, 201, { account, sync });
@@ -249,7 +288,8 @@ class AssistantApp {
 
   requireAccount(accountKey) {
     const account = this.store.getAccount(accountKey);
-    if (!account) throw notFound('平台账号不存在');
+    const binding = this.store.getBinding();
+    if (!account || !binding || (account.subject_key || null) !== (binding.subjectKey || null)) throw notFound('平台账号不存在');
     return account;
   }
 }

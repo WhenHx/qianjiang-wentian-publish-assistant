@@ -125,7 +125,7 @@ class MockBackendServer {
         const result = this.store.consumeBindingToken({ bindingId: decodeURIComponent(match[1]), pollToken: requireString(body.poll_token, 'poll_token', { max: 200 }) });
         if (result.status === 'unauthorized') throw unauthorized('绑定轮询凭证无效');
         if (result.status === 'not_found') throw notFound('绑定申请不存在');
-        if (result.status === 'approved') return sendJson(res, 200, { status: 'approved', device_id: result.deviceId, device_token: result.deviceToken });
+        if (result.status === 'approved') return sendJson(res, 200, { status: 'approved', device_id: result.deviceId, device_token: result.deviceToken, user_id: result.userId });
         return sendJson(res, 200, { status: result.status });
       }
 
@@ -133,7 +133,7 @@ class MockBackendServer {
         const device = this.requireDevice(req);
         const body = await readJsonBody(req);
         this.store.heartbeat({ deviceId: device.id, assistantVersion: optionalString(body.assistant_version, 'assistant_version', { max: 80 }) });
-        return sendJson(res, 200, { ok: true, server_time: new Date().toISOString() });
+        return sendJson(res, 200, { ok: true, server_time: new Date().toISOString(), user_id: device.user_id });
       }
 
       if (pathname === '/api/v1/devices' && req.method === 'GET') {

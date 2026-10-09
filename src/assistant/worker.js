@@ -32,6 +32,18 @@ class AssistantWorker {
     this.running = false;
   }
 
+  async stopAndDrain({ timeoutMs = 90000 } = {}) {
+    this.stop();
+    for (const hold of this.heldTasks.values()) {
+      clearInterval(hold.leaseTimer);
+      await hold.adapter.close().catch(() => {});
+    }
+    this.heldTasks.clear();
+    const deadline = Date.now() + timeoutMs;
+    while (this.busy && Date.now() < deadline) await sleep(200);
+    return !this.busy;
+  }
+
   async loop() {
     while (!this.stopped) {
       try {
@@ -96,7 +108,8 @@ class AssistantWorker {
       if (login.needsUserAction || !login.loggedIn) {
         return this.holdTask(task, adapter, 'login_or_verification', login.verification || { type: 'login_required', message: '平台未登录或登录已失效' });
       }
-      await this.verifyIdentity(task, localAccount, adapter);
+      const identityCheck = await this.verifyIdentity(task, localAccount, adapter);
+      if (!identityCheck.verified) return this.holdTask(task, adapter, identityCheck.code, { type: 'identity_check', message: identityCheck.message });
 
       await this.progress(task, 'uploading', 35, '打开平台发布页面');
       const prepared = await adapter.prepareTask(task);
@@ -135,10 +148,16 @@ class AssistantWorker {
 
   async verifyIdentity(task, localAccount, adapter) {
     const identity = await adapter.checkIdentity();
-    if (localAccount.platform_identity && identity.identity && localAccount.platform_identity !== identity.identity) {
-      throw new Error(`平台身份不匹配：本机账号 ${localAccount.platform_identity} / 当前页面 ${identity.identity}`);
+    if (!identity || !identity.identity) {
+      return { verified: false, code: 'identity_unverifiable', message: '无法从平台页面读取当前账号身份，已阻止继续执行；请人工核对浏览器中登录的账号' };
     }
-    return identity;
+    if (localAccount.platform_identity && localAccount.platform_identity !== identity.identity) {
+      return { verified: false, code: 'identity_mismatch', message: `平台身份不匹配：本机账号基线 ${localAccount.platform_identity} / 当前页面 ${identity.identity}` };
+    }
+    if (!localAccount.platform_identity) {
+      this.store.updateAccountStatus(localAccount.account_key, { status: localAccount.status, platformIdentity: identity.identity });
+    }
+    return { verified: true, identity };
   }
 
   async downloadMaterial(task) {
@@ -235,6 +254,12 @@ class AssistantWorker {
   async executeSubmit(task, adapter) {
     let submitToken = null;
     try {
+      const local = this.store.getLocalTask(task.id);
+      const localAccount = local && local.account_key ? this.store.getAccount(local.account_key) : null;
+      if (localAccount) {
+        const recheck = await this.verifyIdentity(task, localAccount, adapter);
+        if (!recheck.verified) throw new Error(`提交前身份核验未通过：${recheck.message}`);
+      }
       const authorization = await this.cloud.authorizeSubmit(task.id, task.attempt_id, task.content_version);
       submitToken = authorization.submit_token;
       this.store.updateLocalTask(task.id, { status: 'submitting', progress: 95, report_key: randomId('report', 12) });

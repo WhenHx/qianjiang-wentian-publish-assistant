@@ -1,4 +1,5 @@
 {
+  "_note": "identitySelectors 为初版估计值，必须用真实授权账号逐平台校准；读不到稳定身份时助手会阻止提交而不是放行。",
   "douyin": {
     "loginUrl": "https://creator.douyin.com/",
     "uploadUrl": "https://creator.douyin.com/creator-micro/content/upload",
@@ -9,6 +10,7 @@
     "coverButton": "button:has-text('设置封面'), [class*='cover']",
     "submitButton": "button:has-text('发布'), button:has-text('提交')",
     "loggedInIndicators": ["发布视频", "内容管理", "创作者服务中心"],
+    "identitySelectors": ["[data-e2e='user-info']", "[class*='unique_id']", "[class*='nickname']"],
     "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证", "滑块"],
     "successPatterns": ["发布成功", "已发布", "审核中", "提交成功"],
     "failurePatterns": ["发布失败", "上传失败", "审核不通过"]
@@ -23,6 +25,7 @@
     "coverButton": "button:has-text('封面'), [class*='cover']",
     "submitButton": "button:has-text('发表'), button:has-text('发布')",
     "loggedInIndicators": ["视频号助手", "发表动态", "内容管理"],
+    "identitySelectors": ["[class*='account-name']", "[class*='nickname']", "[class*='finder-nickname']"],
     "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证"],
     "successPatterns": ["发表成功", "发布成功", "审核中"],
     "failurePatterns": ["发表失败", "发布失败", "上传失败"]
@@ -37,6 +40,7 @@
     "coverButton": "button:has-text('封面'), [class*='cover']",
     "submitButton": "button:has-text('发布'), button:has-text('提交')",
     "loggedInIndicators": ["快手创作者服务平台", "发布视频", "内容管理"],
+    "identitySelectors": ["[class*='user-name']", "[class*='nickname']", "[class*='user-info']"],
     "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证"],
     "successPatterns": ["发布成功", "提交成功", "审核中"],
     "failurePatterns": ["发布失败", "上传失败"]
@@ -51,6 +55,7 @@
     "coverButton": "button:has-text('封面'), [class*='cover']",
     "submitButton": "button:has-text('发布'), button:has-text('提交')",
     "loggedInIndicators": ["小红书创作服务平台", "发布笔记", "内容管理"],
+    "identitySelectors": ["[class*='user-name']", "[class*='nickname']", "[class*='creator-info']"],
     "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证"],
     "successPatterns": ["发布成功", "提交成功", "审核中"],
     "failurePatterns": ["发布失败", "上传失败"]

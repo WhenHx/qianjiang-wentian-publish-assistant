@@ -3,6 +3,7 @@ class PlatformAdapter {
   async login() { throw new Error('not implemented'); }
   async checkIdentity() { throw new Error('not implemented'); }
   async checkLoginState() { throw new Error('not implemented'); }
+  async checkLoginStateReadOnly() { throw new Error('not implemented'); }
   async prepareTask() { throw new Error('not implemented'); }
   async uploadVideo() { throw new Error('not implemented'); }
   async fillFields() { throw new Error('not implemented'); }

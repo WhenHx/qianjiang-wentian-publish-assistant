@@ -36,28 +36,40 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
 
   async checkIdentity() {
     const browser = await this.ensureBrowser();
-    const text = await browser.bodyText();
-    const indicator = (this.selectors.loggedInIndicators || []).find(item => text.includes(item));
+    const selectors = this.selectors.identitySelectors || [];
+    let identity = null;
+    for (const selector of selectors) {
+      const text = await browser.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`).catch(() => '');
+      if (text) { identity = text.slice(0, 80); break; }
+    }
     return {
       platform: this.context.platform,
-      identity: this.context.account.platform_identity || indicator || null,
-      nickname: this.context.account.nickname,
+      identity,
       url: await browser.currentUrl().catch(() => '')
     };
   }
 
   async checkLoginState() {
-    const browser = await this.ensureBrowser(this.selectors.loginUrl);
+    return this.checkLoginStateInternal({ navigateToLogin: true });
+  }
+
+  async checkLoginStateReadOnly() {
+    return this.checkLoginStateInternal({ navigateToLogin: false });
+  }
+
+  async checkLoginStateInternal({ navigateToLogin }) {
+    const browser = await this.ensureBrowser(navigateToLogin ? this.selectors.loginUrl : undefined);
     const text = await browser.bodyText();
     const verification = await this.detectVerification();
     if (verification) return { loggedIn: false, needsUserAction: true, verification };
     const indicator = (this.selectors.loggedInIndicators || []).find(item => text.includes(item));
     const state = await browser.saveCookies();
     return {
-      loggedIn: Boolean(indicator || (state.cookies || []).length),
+      loggedIn: Boolean(indicator),
       identity: await this.checkIdentity(),
       state,
       verifiedSelector: Boolean(indicator),
+      cookieCount: (state.cookies || []).length,
       checked_at: new Date().toISOString()
     };
   }

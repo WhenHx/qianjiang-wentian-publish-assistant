@@ -6,6 +6,17 @@ const { nowIso, addMs } = require('../common/time');
 
 const TERMINAL_STATUSES = new Set(['submitted', 'outcome_unknown', 'failed', 'cancelled']);
 
+// 单调执行阶段：只允许同级刷新或前进，禁止回退
+const PHASE_RANK = { claimed: 1, downloading: 2, uploading: 3, ready_to_submit: 4 };
+
+function isAllowedProgressTransition(from, to) {
+  if (TERMINAL_STATUSES.has(from) || from === 'submitting') return false;
+  if (to === 'needs_user_action') return from in PHASE_RANK || from === 'needs_user_action';
+  if (!(to in PHASE_RANK)) return false;
+  if (from === 'needs_user_action') return to === 'uploading' || to === 'ready_to_submit';
+  return PHASE_RANK[to] >= PHASE_RANK[from];
+}
+
 function json(value) { return JSON.stringify(value ?? null); }
 function parseJson(value, fallback = null) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -203,7 +214,8 @@ CREATE TABLE reports (
       if (binding.status !== 'approved') return { status: binding.status };
       const deviceToken = binding.pending_device_token;
       this.db.prepare(`UPDATE binding_codes SET status='consumed', pending_device_token=NULL WHERE id=?`).run(bindingId);
-      return { status: 'approved', deviceId: binding.device_id, deviceToken };
+      const device = this.db.prepare('SELECT user_id FROM devices WHERE id=?').get(binding.device_id);
+      return { status: 'approved', deviceId: binding.device_id, deviceToken, userId: device ? device.user_id : null };
     });
   }
 
@@ -369,8 +381,9 @@ CREATE TABLE reports (
     const { task, error: lookupError } = this.requireTaskForDevice(taskId, device, attemptId);
     if (lookupError) return { ok: false, code: lookupError };
     if (TERMINAL_STATUSES.has(task.status)) return { ok: false, code: 'task_terminal' };
-    const allowed = new Set(['claimed', 'downloading', 'uploading', 'ready_to_submit', 'needs_user_action', 'outcome_unknown']);
-    if (!allowed.has(status)) return { ok: false, code: 'invalid_status' };
+    if (!isAllowedProgressTransition(task.status, status)) {
+      return { ok: false, code: 'invalid_transition', message: `不允许的状态转换：${task.status} -> ${status}` };
+    }
     this.db.prepare('UPDATE tasks SET status=?, progress=?, error_json=?, updated_at=? WHERE id=?')
       .run(status, Math.max(0, Math.min(100, Number(progress) || 0)), json(error || null), nowIso(), taskId);
     this.addTaskEvent(taskId, 'device', 'progress', { attempt_id: attemptId, status, progress, message });
@@ -396,8 +409,8 @@ CREATE TABLE reports (
       if (task.content_version !== contentVersion) return { ok: false, status: 409, code: 'content_mismatch', message: '任务内容版本已变化' };
       if (!task.submission_intent_at) return { ok: false, status: 409, code: 'submission_intent_missing', message: '尚未保存提交意图' };
       if (Date.parse(task.lease_expires_at || 0) <= Date.now()) return { ok: false, status: 409, code: 'lease_expired', message: '任务租约已过期' };
-      if (task.submit_token_hash && task.submit_token_expires_at && Date.parse(task.submit_token_expires_at) > Date.now()) {
-        return { ok: false, status: 409, code: 'submit_already_authorized', message: '提交授权已发放' };
+      if (task.submit_authorized_at) {
+        return { ok: false, status: 409, code: 'submit_already_authorized', message: '提交授权已发放；每个执行实例仅授权一次，授权过期或中断后不得再次发布，请走结果核实' };
       }
       if (task.status !== 'ready_to_submit') return { ok: false, status: 409, code: 'invalid_state', message: `当前状态不允许提交：${task.status}` };
       const submitToken = randomId('submit', 24);
@@ -419,11 +432,6 @@ CREATE TABLE reports (
     return immediateTransaction(this.db, () => {
       const { task, error: lookupError } = this.requireTaskForDevice(taskId, device, attemptId);
       if (lookupError) return { ok: false, status: lookupError === 'attempt_mismatch' ? 409 : 404, code: lookupError, message: '任务归属或执行实例不匹配' };
-      const existing = this.db.prepare('SELECT * FROM reports WHERE task_id=? AND attempt_id=? AND report_key=?').get(taskId, attemptId, reportKey);
-      if (existing) return { ok: true, duplicate: true, report: existing };
-      if (task.status === 'submitting' && outcome === 'submitted' && !this.verifySubmitToken(task, submitToken)) {
-        return { ok: false, status: 409, code: 'submit_token_invalid', message: '提交授权无效或已过期' };
-      }
       const statusMap = { submitted: 'submitted', failed: 'failed', outcome_unknown: 'outcome_unknown', cancelled: 'cancelled' };
       const status = statusMap[outcome];
       if (!status) return { ok: false, status: 400, code: 'invalid_outcome', message: '结果类型无效' };
@@ -434,6 +442,28 @@ CREATE TABLE reports (
         reported_at: nowIso(),
         note: outcome === 'submitted' ? '平台已接收或适配器确认提交，不等于公开发布成功' : undefined
       };
+      const existing = this.db.prepare('SELECT * FROM reports WHERE task_id=? AND attempt_id=? AND report_key=?').get(taskId, attemptId, reportKey);
+      if (existing) {
+        const original = parseJson(existing.result_json, {});
+        if (original.outcome !== outcome || JSON.stringify(original.evidence || {}) !== JSON.stringify(result.evidence) || JSON.stringify(original.error || null) !== JSON.stringify(result.error)) {
+          return { ok: false, status: 409, code: 'report_conflict', message: '相同 report_key 的结果内容与首次上报不一致' };
+        }
+        return { ok: true, duplicate: true, report: existing };
+      }
+      if (TERMINAL_STATUSES.has(task.status)) {
+        return { ok: false, status: 409, code: 'task_terminal', message: '任务已进入终态，设备结果不能覆盖；结果变更只能走人工核实流程' };
+      }
+      if (outcome === 'submitted') {
+        if (task.status !== 'submitting' || !this.verifySubmitToken(task, submitToken)) {
+          return { ok: false, status: 409, code: 'submit_token_invalid', message: '提交授权无效、已过期或任务不在提交阶段' };
+        }
+      } else if (task.status === 'submitting' && task.submit_token_hash) {
+        const tokenValid = this.verifySubmitToken(task, submitToken);
+        const tokenExpired = Date.parse(task.submit_token_expires_at || 0) <= Date.now();
+        if (!tokenValid && !tokenExpired) {
+          return { ok: false, status: 409, code: 'submit_token_invalid', message: '提交阶段上报结果需要有效提交令牌；客户端中断恢复请等待令牌过期后重试' };
+        }
+      }
       this.db.prepare('INSERT INTO reports (id,task_id,attempt_id,report_key,result_json,created_at) VALUES (?,?,?,?,?,?)')
         .run(randomId('report'), taskId, attemptId, reportKey, json(result), nowIso());
       this.db.prepare('UPDATE tasks SET status=?, progress=?, result_json=?, error_json=?, updated_at=?, completed_at=? WHERE id=?')

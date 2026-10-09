@@ -84,10 +84,13 @@ test('提交中的任务不能取消，不明结果可由所属用户人工核�
   const claim = (await api(baseUrl, '/api/v1/tasks/claim', { token: bound.deviceToken, method: 'POST', body: {} })).data.task;
   await api(baseUrl, `/api/v1/tasks/${task.id}/progress`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, status: 'ready_to_submit', progress: 90 } });
   await api(baseUrl, `/api/v1/tasks/${task.id}/submission-intent`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, content_version: claim.content_version, account_id: claim.account_id } });
-  await api(baseUrl, `/api/v1/tasks/${task.id}/submit-authorization`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, content_version: claim.content_version } });
+  const authForUnknown = await api(baseUrl, `/api/v1/tasks/${task.id}/submit-authorization`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, content_version: claim.content_version } });
+  assert.equal(authForUnknown.status, 200);
   const cancel = await api(baseUrl, `/api/v1/tasks/${task.id}/cancel`, { token: USER_A, method: 'POST', body: {} });
   assert.equal(cancel.status, 409);
-  const unknown = await api(baseUrl, `/api/v1/tasks/${task.id}/result`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, report_key: 'unknown-1', outcome: 'outcome_unknown', evidence: { reason: 'submit timeout' } } });
+  const unknownWithoutToken = await api(baseUrl, `/api/v1/tasks/${task.id}/result`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, report_key: 'unknown-0', outcome: 'outcome_unknown', evidence: { reason: 'missing token' } } });
+  assert.equal(unknownWithoutToken.status, 409);
+  const unknown = await api(baseUrl, `/api/v1/tasks/${task.id}/result`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, report_key: 'unknown-1', outcome: 'outcome_unknown', submit_token: authForUnknown.data.submit_token, evidence: { reason: 'submit timeout' } } });
   assert.equal(unknown.status, 201);
   const reviewAsB = await api(baseUrl, `/api/v1/tasks/${task.id}/review`, { token: USER_B, method: 'POST', body: { outcome: 'submitted' } });
   assert.equal(reviewAsB.status, 404);

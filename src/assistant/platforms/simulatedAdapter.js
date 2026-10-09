@@ -13,6 +13,10 @@ class SimulatedPlatformAdapter extends PlatformAdapter {
     return { loggedIn: true, identity: await this.checkIdentity(), state: { simulated: true, account_key: this.context.account.account_key } };
   }
 
+  async checkLoginStateReadOnly() {
+    return this.checkLoginState();
+  }
+
   async prepareTask() { return { prepared: true, simulated: true }; }
   async uploadVideo(videoPath) { return { uploaded: true, simulated: true, video_path: videoPath }; }
   async fillFields(fields) { return { filled: true, simulated: true, fields: { title: fields.title, topics: fields.topics } }; }
