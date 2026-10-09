@@ -18,6 +18,7 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     super(context);
     this.selectors = loadSelectors()[context.platform];
     if (!this.selectors) throw new Error(`缺少平台选择器配置：${context.platform}`);
+    this.frame = this.selectors.frame || null;
     this.browser = null;
   }
 
@@ -37,14 +38,18 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     return { status: 'needs_manual', message: '已打开独立平台登录窗口，请在窗口中完成登录或验证，然后回到助手点击“检查登录状态”。' };
   }
 
-  async checkIdentity() {
+  async checkIdentity({ timeoutMs = 5000, pollMs = 500 } = {}) {
     const browser = await this.ensureBrowser();
     const selectors = this.selectors.identitySelectors || [];
     let identity = null;
-    for (const selector of selectors) {
-      const text = await browser.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`).catch(() => '');
-      if (text) { identity = text.slice(0, 80); break; }
-    }
+    const deadline = Date.now() + timeoutMs;
+    do {
+      for (const selector of selectors) {
+        const text = await browser.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`).catch(() => '');
+        if (text) { identity = text.slice(0, 80); break; }
+      }
+      if (!identity) await sleep(pollMs);
+    } while (!identity && Date.now() < deadline);
     if (identity) {
       this.verifiedSession = { identity, marker: await this.sessionMarker(), verified_at: new Date().toISOString() };
     }
@@ -84,15 +89,27 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     return this.checkLoginStateInternal({ navigateToLogin: false });
   }
 
+  async waitForContent({ timeoutMs = 10000, pollMs = 500 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let text = '';
+    while (Date.now() < deadline) {
+      text = await this.browser.bodyText();
+      const indicator = (this.selectors.loggedInIndicators || []).find(item => text.includes(item));
+      if (indicator) return { text, indicator };
+      if ((this.selectors.verificationPatterns || []).find(item => text.includes(item))) return { text, indicator: null };
+      await sleep(pollMs);
+    }
+    return { text, indicator: null };
+  }
+
   async checkLoginStateInternal({ navigateToLogin }) {
     if (!navigateToLogin && !this.browser) {
       return { loggedIn: false, readOnly: true, reason: 'browser_not_started', checked_at: new Date().toISOString() };
     }
     const browser = await this.ensureBrowser(navigateToLogin ? this.selectors.loginUrl : undefined);
-    const text = await browser.bodyText();
+    const { text, indicator } = await this.waitForContent();
     const verification = await this.detectVerification();
     if (verification) return { loggedIn: false, needsUserAction: true, verification };
-    const indicator = (this.selectors.loggedInIndicators || []).find(item => text.includes(item));
     const state = await browser.saveCookies();
     return {
       loggedIn: Boolean(indicator),
@@ -114,7 +131,8 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
   async uploadVideo(videoPath) {
     const browser = await this.ensureBrowser();
     const selector = splitSelectors(this.selectors.fileInput)[0] || 'input[type=file]';
-    await browser.setFileInput(selector, videoPath);
+    await browser.waitForSelector(selector, 20000, this.frame);
+    await browser.setFileInput(selector, videoPath, this.frame);
     return { uploaded: true, selector };
   }
 
@@ -122,11 +140,11 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     const browser = await this.ensureBrowser();
     const filled = {};
     for (const selector of splitSelectors(this.selectors.titleInput)) {
-      if (await browser.setValue(selector, fields.title).catch(() => false)) { filled.title = selector; break; }
+      if (await browser.setValue(selector, fields.title, this.frame).catch(() => false)) { filled.title = selector; break; }
     }
     const description = [fields.description, ...(fields.topics || []).map(item => `#${item}`)].filter(Boolean).join('\n');
     for (const selector of splitSelectors(this.selectors.descriptionInput)) {
-      if (await browser.setValue(selector, description).catch(() => false)) { filled.description = selector; break; }
+      if (await browser.setValue(selector, description, this.frame).catch(() => false)) { filled.description = selector; break; }
     }
     return { filled, unverified: true };
   }
@@ -149,22 +167,22 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
       const hasText = candidate.match(/^button:has-text\(['"](.+)['"]\)$/);
       let clicked;
       if (hasText) {
-        clicked = await browser.evaluate(`(() => {
+        clicked = await browser.evaluate(browser.frameWrap(`(() => {
           const target = ${JSON.stringify(hasText[1])};
           const el = [...document.querySelectorAll('button,[role=button]')].find(item => (item.innerText || '').trim() === target && !item.disabled);
           if (!el) return false;
           el.scrollIntoView({ block: 'center' });
           el.click();
           return true;
-        })()`);
+        })()`, this.frame));
       } else {
-        clicked = await browser.evaluate(`(() => {
+        clicked = await browser.evaluate(browser.frameWrap(`(() => {
           const el = document.querySelector(${JSON.stringify(candidate)});
           if (!el || el.disabled) return false;
           el.scrollIntoView({ block: 'center' });
           el.click();
           return true;
-        })()`);
+        })()`, this.frame));
       }
       if (clicked) return { clicked: true, selector: candidate, clicked_at: new Date().toISOString() };
     }

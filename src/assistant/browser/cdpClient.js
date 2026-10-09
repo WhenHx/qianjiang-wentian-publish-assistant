@@ -171,6 +171,11 @@ class ManagedBrowser {
     throw new Error('页面加载超时');
   }
 
+  frameWrap(expression, frame) {
+    if (!frame) return expression;
+    return `(function(){ const __f = window.document.querySelector(${JSON.stringify(frame)}); if (!__f || !__f.contentDocument) throw new Error('frame_not_found: ${frame}'); const document = __f.contentDocument; return (${expression}); })()`;
+  }
+
   async navigate(url, { timeoutMs = 15000 } = {}) {
     await this.page.send('Page.navigate', { url });
     await this.waitForReady({ timeoutMs });
@@ -182,31 +187,42 @@ class ManagedBrowser {
     return result.result?.value;
   }
 
-  async waitForSelector(selector, timeoutMs = 15000) {
+  async waitForSelector(selector, timeoutMs = 15000, frame = null) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const found = await this.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`).catch(() => false);
+      const found = await this.evaluate(this.frameWrap(`Boolean(document.querySelector(${JSON.stringify(selector)}))`, frame)).catch(() => false);
       if (found) return true;
       await sleep(300);
     }
     throw new Error(`等待页面元素超时：${selector}`);
   }
 
-  async setFileInput(selector, filePath) {
+  async setFileInput(selector, filePath, frame = null) {
+    if (frame) {
+      await this.page.send('DOM.enable').catch(() => {});
+      const handle = await this.page.send('Runtime.evaluate', {
+        expression: this.frameWrap(`document.querySelector(${JSON.stringify(selector)})`, frame),
+        returnByValue: false
+      });
+      const obj = handle.result;
+      if (!obj || obj.subtype !== 'node') throw new Error(`未找到文件上传控件：${selector}（frame: ${frame}）`);
+      await this.page.send('DOM.setFileInputFiles', { files: [filePath], objectId: obj.objectId });
+      return;
+    }
     const doc = await this.page.send('DOM.getDocument', { depth: -1, pierce: true });
     const node = await this.page.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector });
     if (!node.nodeId) throw new Error(`未找到文件上传控件：${selector}`);
     await this.page.send('DOM.setFileInputFiles', { files: [filePath], nodeId: node.nodeId });
   }
 
-  async click(selector) {
-    await this.waitForSelector(selector, 10000);
-    await this.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })()`);
+  async click(selector, frame = null) {
+    await this.waitForSelector(selector, 10000, frame);
+    await this.evaluate(this.frameWrap(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })()`, frame));
   }
 
-  async setValue(selector, value) {
-    await this.waitForSelector(selector, 10000);
-    return this.evaluate(`(() => {
+  async setValue(selector, value, frame = null) {
+    await this.waitForSelector(selector, 10000, frame);
+    return this.evaluate(this.frameWrap(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return false;
       el.focus();
@@ -214,18 +230,19 @@ class ManagedBrowser {
       if (el.isContentEditable) {
         el.innerText = value;
       } else {
-        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const win = el.ownerDocument.defaultView;
+        const proto = el.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
         Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
       }
       el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       const actual = el.isContentEditable ? el.innerText : el.value;
       return actual === value;
-    })()`);
+    })()`, frame));
   }
 
-  async bodyText() {
-    return this.evaluate('document.body ? document.body.innerText : ""', { timeoutMs: 10000 }).catch(() => '');
+  async bodyText(frame = null) {
+    return this.evaluate(this.frameWrap('document.body ? document.body.innerText : ""', frame), { timeoutMs: 10000 }).catch(() => '');
   }
 
   async currentUrl() { return this.evaluate('location.href'); }
