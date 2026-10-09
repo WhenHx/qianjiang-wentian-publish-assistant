@@ -19,10 +19,10 @@ async function localApi(baseUrl, token, apiPath, { method = 'GET', body } = {}) 
   return { status: response.status, data };
 }
 
-async function readyToSubmitTask(baseUrl, userToken, deviceToken, deviceId) {
+async function readyToSubmitTask(baseUrl, userToken, deviceToken, deviceId, key) {
   const account = await syncAccount(baseUrl, deviceToken);
   const material = await uploadMaterial(baseUrl, userToken);
-  const task = await createTask(baseUrl, userToken, { deviceId, accountId: account.account_id, materialId: material.id });
+  const task = await createTask(baseUrl, userToken, { deviceId, accountId: account.account_id, materialId: material.id, key: key || `rts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
   const claim = (await api(baseUrl, '/api/v1/tasks/claim', { token: deviceToken, method: 'POST', body: {} })).data.task;
   await api(baseUrl, `/api/v1/tasks/${task.id}/progress`, { token: deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, status: 'downloading', progress: 20 } });
   await api(baseUrl, `/api/v1/tasks/${task.id}/progress`, { token: deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, status: 'uploading', progress: 50 } });
@@ -128,9 +128,8 @@ test('F02：任意 Cookie 不再视为登录，身份读不到返回 null', asyn
   assert.equal((await adapter.checkIdentity()).identity, 'identity-A');
 });
 
-test('F02：worker 身份读不到或不匹配时阻止执行，首次读到写为基线', async () => {
-  const writes = [];
-  const store = { updateAccountStatus: (key, value) => writes.push({ key, value }) };
+test('F02：worker 身份读不到或不匹配时阻止执行，无基线时需人工确认', async () => {
+  const store = { updateAccountStatus: () => { throw new Error('执行路径不得写入身份基线'); } };
   const worker = new AssistantWorker({ config: {}, store, cloud: null, logger: null });
   const task = { id: 'task_x' };
 
@@ -142,13 +141,40 @@ test('F02：worker 身份读不到或不匹配时阻止执行，首次读到写�
   assert.equal(mismatch.verified, false);
   assert.equal(mismatch.code, 'identity_mismatch');
 
-  const baseline = await worker.verifyIdentity(task, { account_key: 'a2', platform_identity: null, status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-C' }) });
-  assert.equal(baseline.verified, true);
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].value.platformIdentity, 'identity-C');
+  const noBaseline = await worker.verifyIdentity(task, { account_key: 'a2', platform_identity: null, status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-C' }) });
+  assert.equal(noBaseline.verified, false);
+  assert.equal(noBaseline.code, 'identity_baseline_missing');
 
   const match = await worker.verifyIdentity(task, { account_key: 'a2', platform_identity: 'identity-C', status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-C' }) });
   assert.equal(match.verified, true);
+});
+
+test('F02：只读登录检查在浏览器未启动时不打开窗口', async () => {
+  const account = { account_key: 'localacct_x2', platform: 'douyin', nickname: '只读测试', platform_identity: null, profile_dir: 'x' };
+  const adapter = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  const state = await adapter.checkLoginStateReadOnly();
+  assert.equal(state.loggedIn, false);
+  assert.equal(state.reason, 'browser_not_started');
+  assert.equal(adapter.browser, null);
+});
+
+test('F04：幂等键内容比较与键序无关，非法令牌类型返回 409 而非 500', async t => {
+  const { baseUrl } = await startMockBackend(t);
+  const bound = await bindDevice(baseUrl, USER_A);
+  const { task, claim } = await readyToSubmitTask(baseUrl, USER_A, bound.deviceToken, bound.deviceId);
+  const auth = await api(baseUrl, `/api/v1/tasks/${task.id}/submit-authorization`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, content_version: claim.content_version } });
+
+  const first = await api(baseUrl, `/api/v1/tasks/${task.id}/result`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, report_key: 'rk-1', outcome: 'submitted', submit_token: auth.data.submit_token, evidence: { a: 1, b: { c: 2, d: 3 } } } });
+  assert.equal(first.status, 201);
+  const reordered = await api(baseUrl, `/api/v1/tasks/${task.id}/result`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: claim.attempt_id, report_key: 'rk-1', outcome: 'submitted', evidence: { b: { d: 3, c: 2 }, a: 1 } } });
+  assert.equal(reordered.status, 200);
+  assert.equal(reordered.data.duplicate, true);
+
+  const badTokenSetup = await readyToSubmitTask(baseUrl, USER_A, bound.deviceToken, bound.deviceId, 'f04-badtoken');
+  const auth2 = await api(baseUrl, `/api/v1/tasks/${badTokenSetup.task.id}/submit-authorization`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: badTokenSetup.claim.attempt_id, content_version: badTokenSetup.claim.content_version } });
+  const badToken = await api(baseUrl, `/api/v1/tasks/${badTokenSetup.task.id}/result`, { token: bound.deviceToken, method: 'POST', body: { attempt_id: badTokenSetup.claim.attempt_id, report_key: 'rk-bad', outcome: 'submitted', submit_token: { evil: true }, evidence: {} } });
+  assert.equal(badToken.status, 409);
+  assert.equal(badToken.data.error.code, 'submit_token_invalid');
 });
 
 test('F01：换绑业务用户后本机账号、任务与云端同步按主体隔离', async t => {
@@ -207,6 +233,9 @@ test('F01：换绑业务用户后本机账号、任务与云端同步按主体�
 
   const crossAccess = await localApi(localBase, app.localToken, `/local/v1/accounts/${account.data.account.account_key}/check`, { method: 'POST', body: {} });
   assert.equal(crossAccess.status, 404);
+
+  const crossDelete = await localApi(localBase, app.localToken, `/local/v1/accounts/${account.data.account.account_key}`, { method: 'DELETE' });
+  assert.equal(crossDelete.status, 404);
 
   await localApi(localBase, app.localToken, '/local/v1/binding', { method: 'DELETE' });
   await bindAs(USER_A);

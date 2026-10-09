@@ -11,10 +11,17 @@ const PHASE_RANK = { claimed: 1, downloading: 2, uploading: 3, ready_to_submit: 
 
 function isAllowedProgressTransition(from, to) {
   if (TERMINAL_STATUSES.has(from) || from === 'submitting') return false;
-  if (to === 'needs_user_action') return from in PHASE_RANK || from === 'needs_user_action';
-  if (!(to in PHASE_RANK)) return false;
+  if (to === 'needs_user_action') return from === 'uploading' || from === 'ready_to_submit' || from === 'needs_user_action';
+  if (!Object.hasOwn(PHASE_RANK, to)) return false;
   if (from === 'needs_user_action') return to === 'uploading' || to === 'ready_to_submit';
+  if (!Object.hasOwn(PHASE_RANK, from)) return false;
   return PHASE_RANK[to] >= PHASE_RANK[from];
+}
+
+function stableStringify(value) {
+  if (value === null || value === undefined || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
 }
 
 function json(value) { return JSON.stringify(value ?? null); }
@@ -423,7 +430,7 @@ CREATE TABLE reports (
   }
 
   verifySubmitToken(task, submitToken) {
-    if (!task.submit_token_hash || !submitToken) return false;
+    if (!task.submit_token_hash || typeof submitToken !== 'string' || !submitToken) return false;
     if (Date.parse(task.submit_token_expires_at || 0) <= Date.now()) return false;
     return task.submit_token_hash === sha256Buffer(Buffer.from(submitToken));
   }
@@ -445,7 +452,10 @@ CREATE TABLE reports (
       const existing = this.db.prepare('SELECT * FROM reports WHERE task_id=? AND attempt_id=? AND report_key=?').get(taskId, attemptId, reportKey);
       if (existing) {
         const original = parseJson(existing.result_json, {});
-        if (original.outcome !== outcome || JSON.stringify(original.evidence || {}) !== JSON.stringify(result.evidence) || JSON.stringify(original.error || null) !== JSON.stringify(result.error)) {
+        const sameContent = original.outcome === outcome
+          && stableStringify(original.evidence || {}) === stableStringify(result.evidence)
+          && stableStringify(original.error || null) === stableStringify(result.error);
+        if (!sameContent) {
           return { ok: false, status: 409, code: 'report_conflict', message: '相同 report_key 的结果内容与首次上报不一致' };
         }
         return { ok: true, duplicate: true, report: existing };

@@ -9,48 +9,50 @@ v24.21.0
 
 ===== npm test =====
 
-> qianjiang-wentian-publish-assistant@0.1.1-test test
+> qianjiang-wentian-publish-assistant@0.1.2-test test
 > node --test tests/*.test.js
 
-[2026-10-09T08:06:16.773Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
-[2026-10-09T08:06:16.786Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:57561' }
-[2026-10-09T08:06:16.948Z] INFO 素材下载完成 {
-  task_id: 'task_1EDU6VaSMSYOJk1HqajcRA',
+[2026-10-09T08:51:56.760Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-09T08:51:56.772Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:65527' }
+[2026-10-09T08:51:56.928Z] INFO 素材下载完成 {
+  task_id: 'task_soahfYDMrWEJOzNKYt3qzA',
   bytes: 22,
   sha256: '88e0a88eb0384173eecb7479aed78475f8ecdd35d89d46f10cdbc3fdbcbe542c'
 }
-[2026-10-09T08:06:17.635Z] INFO 素材下载完成 {
-  task_id: 'task_YdmNIIeATOzsCJ6VlXjw8w',
+[2026-10-09T08:51:57.620Z] INFO 素材下载完成 {
+  task_id: 'task_Hx1KaQLKd2X_aw9qVu8BoQ',
   bytes: 17,
   sha256: 'c29ada37d61f176d01ea87832e59854b4dd919de50de32bdea481c607dcd220b'
 }
-✔ 模拟后端 + 助手核心完成端到端任务，默认停在提交前并可单次提交 (1653.7377ms)
-✔ F03：状态机禁止回退，提交授权每个 attempt 仅一次 (89.3124ms)
-[2026-10-09T08:06:17.087Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
-[2026-10-09T08:06:17.356Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
-[2026-10-09T08:06:17.367Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:57581' }
-✔ F04：终态不可被设备结果覆盖，幂等键绑定原结果内容 (45.7573ms)
-✔ F08：生产/CDP 模式配置未加密存储开关时拒绝启动 (909.2203ms)
-✔ F02：任意 Cookie 不再视为登录，身份读不到返回 null (4.3149ms)
-✔ F02：worker 身份读不到或不匹配时阻止执行，首次读到写为基线 (0.1877ms)
-✔ F01：换绑业务用户后本机账号、任务与云端同步按主体隔离 (315.0946ms)
-[2026-10-09T08:06:17.418Z] WARN 心跳或账号同步失败 { error: 'fetch failed', code: undefined }
-✔ 日志脱敏覆盖 token、cookie、password 和 Authorization (0.6752ms)
-✔ 平台和话题输入校验 (0.5835ms)
-✔ Windows 当前用户范围 DPAPI 真实往返 (1358.6595ms)
-✔ 绑定码单次使用，两个业务用户设备和账号互相隔离 (62.0382ms)
-✔ 素材与任务权限隔离，修改 ID 不能越权 (30.9958ms)
-✔ 并发领取同一任务只有一个成功，旧 attempt 被拒绝，回传幂等 (40.8174ms)
-✔ 设备撤销后不能继续领取或获得提交授权 (23.098ms)
-✔ 提交中的任务不能取消，不明结果可由所属用户人工核实 (39.9621ms)
-✔ 恶意昵称和路径字段不能目录穿越 (1.4702ms)
-✔ 生产模式阻止本机和内网素材地址 (0.9879ms)
-✔ 下载校验来源、类型、大小和完整性，明确开发模式允许回环地址 (32.126ms)
-ℹ tests 18
+✔ 模拟后端 + 助手核心完成端到端任务，默认停在提交前并可单次提交 (1695.3882ms)
+✔ F03：状态机禁止回退，提交授权每个 attempt 仅一次 (88.448ms)
+[2026-10-09T08:51:57.061Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+✔ F04：终态不可被设备结果覆盖，幂等键绑定原结果内容 (51.7192ms)
+✔ F08：生产/CDP 模式配置未加密存储开关时拒绝启动 (929.2477ms)
+✔ F02：任意 Cookie 不再视为登录，身份读不到返回 null (0.5354ms)
+✔ F02：worker 身份读不到或不匹配时阻止执行，无基线时需人工确认 (0.1554ms)
+✔ F02：只读登录检查在浏览器未启动时不打开窗口 (0.1771ms)
+[2026-10-09T08:51:57.389Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-09T08:51:57.400Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:49183' }
+✔ F04：幂等键内容比较与键序无关，非法令牌类型返回 409 而非 500 (59.782ms)
+✔ F01：换绑业务用户后本机账号、任务与云端同步按主体隔离 (316.596ms)
+[2026-10-09T08:51:57.451Z] WARN 心跳或账号同步失败 { error: 'fetch failed', code: undefined }
+✔ 日志脱敏覆盖 token、cookie、password 和 Authorization (0.6579ms)
+✔ 平台和话题输入校验 (0.5815ms)
+✔ Windows 当前用户范围 DPAPI 真实往返 (1252.4197ms)
+✔ 绑定码单次使用，两个业务用户设备和账号互相隔离 (66.4555ms)
+✔ 素材与任务权限隔离，修改 ID 不能越权 (35.2026ms)
+✔ 并发领取同一任务只有一个成功，旧 attempt 被拒绝，回传幂等 (44.0036ms)
+✔ 设备撤销后不能继续领取或获得提交授权 (20.63ms)
+✔ 提交中的任务不能取消，不明结果可由所属用户人工核实 (38.6634ms)
+✔ 恶意昵称和路径字段不能目录穿越 (1.2929ms)
+✔ 生产模式阻止本机和内网素材地址 (0.995ms)
+✔ 下载校验来源、类型、大小和完整性，明确开发模式允许回环地址 (34.4467ms)
+ℹ tests 20
 ℹ suites 0
-ℹ pass 18
+ℹ pass 20
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 1984.0639
+ℹ duration_ms 1823.7098

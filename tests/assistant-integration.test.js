@@ -50,6 +50,9 @@ test('模拟后端 + 助手核心完成端到端任务，默认停在提交前�
 
   const account = await localApi(localBase, app.localToken, '/local/v1/accounts', { method: 'POST', body: { platform: 'douyin', nickname: '集成测试抖音号' } });
   assert.equal(account.status, 201);
+  const check = await localApi(localBase, app.localToken, `/local/v1/accounts/${account.data.account.account_key}/check`, { method: 'POST', body: {} });
+  assert.equal(check.status, 200);
+  assert.equal(check.data.loggedIn, true);
   const cloudAccounts = await api(baseUrl, '/api/v1/accounts', { token: USER_A });
   assert.equal(cloudAccounts.data.accounts.length, 1);
   const material = await uploadMaterial(baseUrl, USER_A, 'integration.mp4', Buffer.from('integration fake video'));

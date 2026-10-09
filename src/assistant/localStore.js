@@ -14,7 +14,16 @@ function parseJson(value, fallback = null) {
 
 function subjectKeyFor(serviceUrl, userId) {
   if (!userId) return null;
-  return sha256Buffer(Buffer.from(`${serviceUrl}|${userId}`)).slice(0, 24);
+  let normalized = String(serviceUrl || '').trim();
+  try {
+    const url = new URL(normalized);
+    const isDefaultPort = (url.protocol === 'https:' && (url.port === '' || url.port === '443'))
+      || (url.protocol === 'http:' && (url.port === '' || url.port === '80'));
+    normalized = `${url.protocol}//${url.hostname.toLowerCase()}${isDefaultPort ? '' : `:${url.port}`}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    normalized = normalized.toLowerCase().replace(/\/+$/, '');
+  }
+  return sha256Buffer(Buffer.from(`${normalized}|${userId}`)).slice(0, 24);
 }
 
 class LocalStore {
@@ -118,9 +127,10 @@ ALTER TABLE local_tasks ADD COLUMN subject_key TEXT;
   clearBinding() { this.db.prepare('DELETE FROM binding WHERE id=1').run(); }
 
   adoptSubjectForLegacyRows(subjectKey) {
-    if (!subjectKey) return;
-    this.db.prepare('UPDATE accounts SET subject_key=? WHERE subject_key IS NULL').run(subjectKey);
-    this.db.prepare('UPDATE local_tasks SET subject_key=? WHERE subject_key IS NULL').run(subjectKey);
+    if (!subjectKey) return { accounts: 0, tasks: 0 };
+    const accounts = this.db.prepare('UPDATE accounts SET subject_key=? WHERE subject_key IS NULL').run(subjectKey).changes;
+    const tasks = this.db.prepare('UPDATE local_tasks SET subject_key=? WHERE subject_key IS NULL').run(subjectKey).changes;
+    return { accounts, tasks };
   }
 
   currentSubjectKey() {
@@ -163,7 +173,7 @@ ALTER TABLE local_tasks ADD COLUMN subject_key TEXT;
     const binding = this.getBinding();
     if (!binding) return [];
     const key = subjectKey === undefined ? binding.subjectKey : subjectKey;
-    const rows = key == null
+    const rows = key === null || key === undefined
       ? this.db.prepare('SELECT * FROM accounts WHERE subject_key IS NULL ORDER BY platform,nickname').all()
       : this.db.prepare('SELECT * FROM accounts WHERE subject_key=? ORDER BY platform,nickname').all(key);
     return rows.map(row => this.decorateAccount(row));
@@ -220,25 +230,21 @@ ALTER TABLE local_tasks ADD COLUMN subject_key TEXT;
 
   getLocalTask(taskId) {
     const row = this.db.prepare('SELECT * FROM local_tasks WHERE task_id=?').get(taskId);
-    if (!row) return null;
-    return { ...row, payload: parseJson(row.payload_json, {}), submit_intent: parseJson(row.submit_intent_json, null), last_error: parseJson(row.last_error_json, null), payload_json: undefined, submit_intent_json: undefined, last_error_json: undefined };
+    return this.decorateLocalTask(row);
   }
 
   listLocalTasks(subjectKey) {
     const binding = this.getBinding();
     if (!binding) return [];
     const key = subjectKey === undefined ? binding.subjectKey : subjectKey;
-    const rows = key == null
+    const rows = key === null || key === undefined
       ? this.db.prepare('SELECT * FROM local_tasks WHERE subject_key IS NULL ORDER BY created_at DESC').all()
       : this.db.prepare('SELECT * FROM local_tasks WHERE subject_key=? ORDER BY created_at DESC').all(key);
     return rows.map(row => this.decorateLocalTask(row));
   }
 
-  listAllLocalTasks() {
-    return this.db.prepare('SELECT * FROM local_tasks ORDER BY created_at DESC').all().map(row => this.decorateLocalTask(row));
-  }
-
   decorateLocalTask(row) {
+    if (!row) return null;
     return {
       ...row,
       payload: parseJson(row.payload_json, {}),

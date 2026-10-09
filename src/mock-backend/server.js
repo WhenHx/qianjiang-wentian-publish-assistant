@@ -368,8 +368,8 @@ class MockBackendServer {
   }
 
   sendStoreError(res, result) {
-    const status = result.code === 'not_found' ? 404 : result.code === 'attempt_mismatch' ? 409 : 409;
-    return sendJson(res, status, { error: { code: result.code, message: `请求被拒绝：${result.code}` } });
+    const status = result.code === 'not_found' ? 404 : 409;
+    return sendJson(res, status, { error: { code: result.code, message: result.message || `请求被拒绝：${result.code}` } });
   }
 
   serveConsole(pathname, res) {

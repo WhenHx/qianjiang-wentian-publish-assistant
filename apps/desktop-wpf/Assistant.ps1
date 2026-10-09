@@ -1,4 +1,6 @@
-﻿Add-Type -AssemblyName PresentationFramework
+param([string]$Config = 'config\assistant.development.json')
+
+Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
@@ -7,7 +9,7 @@ Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptRoot '..\..')
-$ConfigPath = Join-Path $RepoRoot 'config\assistant.development.json'
+$ConfigPath = Join-Path $RepoRoot $Config
 $Config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $DataDir = if ([IO.Path]::IsPathRooted($Config.dataDir)) { $Config.dataDir } else { Join-Path $RepoRoot $Config.dataDir }
 $RuntimePath = Join-Path $DataDir 'runtime.json'
@@ -20,7 +22,7 @@ function Start-AssistantCore {
       return
     } catch {}
   }
-  Start-Process -FilePath 'node.exe' -ArgumentList @('src/assistant/main.js','--config','config/assistant.development.json') -WorkingDirectory $RepoRoot -WindowStyle Hidden
+  Start-Process -FilePath 'node.exe' -ArgumentList @('src/assistant/main.js','--config',$Config) -WorkingDirectory $RepoRoot -WindowStyle Hidden
   $deadline = (Get-Date).AddSeconds(15)
   do {
     Start-Sleep -Milliseconds 500

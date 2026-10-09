@@ -10,6 +10,7 @@ const { readJsonBody, sendJson, sendError } = require('../common/json');
 const { unauthorized, notFound, badRequest, forbidden, conflict } = require('../common/errors');
 const { requireString, requirePlatform } = require('../common/validation');
 const { randomId } = require('../common/ids');
+const { immediateTransaction } = require('../common/sqlite');
 const { isAvailable: dpapiAvailable } = require('../common/dpapi');
 const { createPlatformAdapter, capabilities } = require('./platforms');
 
@@ -59,6 +60,7 @@ class AssistantApp {
     this.worker = new AssistantWorker({ config, store: this.store, cloud: this.cloud, logger: this.logger });
     this.pendingBinding = null;
     this.heartbeatTimer = null;
+    this.subjectMismatch = false;
     this.server = http.createServer((req, res) => this.handle(req, res));
   }
 
@@ -91,7 +93,8 @@ class AssistantApp {
     const beat = async () => {
       try {
         const result = await this.cloud.heartbeat(VERSION);
-        this.reconcileSubject(result?.user_id);
+        const subjectOk = this.reconcileSubject(result?.user_id);
+        if (!subjectOk) return;
         await this.syncAccounts();
       } catch (error) {
         this.logger.warn('心跳或账号同步失败', { error: error.message, code: error.code });
@@ -102,23 +105,33 @@ class AssistantApp {
   }
 
   reconcileSubject(userId) {
-    if (!userId) return;
+    if (!userId) return true;
     const binding = this.store.getBinding();
-    if (!binding) return;
+    if (!binding) return true;
     const expected = subjectKeyFor(this.config.serviceUrl, userId);
     if (!binding.subjectKey) {
-      this.store.setBindingSubject(expected);
-      this.store.adoptSubjectForLegacyRows(expected);
-      this.logger.info('已回填绑定业务主体', { subject_key: expected });
+      const adopted = immediateTransaction(this.store.db, () => {
+        this.store.setBindingSubject(expected);
+        return this.store.adoptSubjectForLegacyRows(expected);
+      });
+      this.logger.info('已回填绑定业务主体', { subject_key: expected, adopted_accounts: adopted.accounts, adopted_tasks: adopted.tasks });
     } else if (binding.subjectKey !== expected) {
-      this.logger.error('云端业务主体与本地绑定主体不一致，已停止任务执行；请解绑后重新绑定', { expected, actual: binding.subjectKey });
-      this.worker.stop();
+      if (!this.subjectMismatch) {
+        this.subjectMismatch = true;
+        this.logger.error('云端业务主体与本地绑定主体不一致，已停止任务执行；请解绑后重新绑定', { expected, actual: binding.subjectKey });
+        this.worker.stop();
+      }
+      return false;
     }
+    return true;
   }
 
   async quiesceForBindingChange() {
     const drained = await this.worker.stopAndDrain({ timeoutMs: 90000 });
-    if (!drained) throw conflict('worker_busy', '仍有任务正在执行，无法安全切换绑定；请等待任务结束后再试');
+    if (!drained) {
+      this.worker.start();
+      throw conflict('worker_busy', '仍有任务正在执行，无法安全切换绑定；请等待任务结束后再试');
+    }
     if (this.openLoginBrowsers) {
       for (const adapter of this.openLoginBrowsers.values()) await adapter.close().catch(() => {});
       this.openLoginBrowsers.clear();
@@ -189,6 +202,7 @@ class AssistantApp {
           }
           this.store.saveBinding({ deviceId: result.device_id, deviceToken: result.device_token, serviceUrl: this.config.serviceUrl, subjectKey });
           this.pendingBinding = null;
+          this.subjectMismatch = false;
           this.worker.start();
           this.startHeartbeat();
         }
@@ -207,10 +221,11 @@ class AssistantApp {
         const binding = this.store.getBinding();
         if (!binding) throw conflict('not_bound', '设备尚未绑定，不能添加平台账号');
         const body = await readJsonBody(req);
+        const platform = requirePlatform(body.platform);
         const account = this.store.createAccount({
-          platform: requirePlatform(body.platform),
+          platform,
           nickname: requireString(body.nickname, 'nickname', { max: 120 }),
-          capabilities: capabilities().platforms[requirePlatform(body.platform)] || {},
+          capabilities: capabilities().platforms[platform] || {},
           subjectKey: binding.subjectKey
         });
         const sync = await this.syncAccounts().catch(error => ({ sync_error: error.message }));
@@ -241,6 +256,7 @@ class AssistantApp {
       match = pathname.match(/^\/local\/v1\/accounts\/([^/]+)$/);
       if (match && req.method === 'DELETE') {
         const key = decodeURIComponent(match[1]);
+        this.requireAccount(key);
         const adapter = this.openLoginBrowsers?.get(key);
         await adapter?.close().catch(() => {});
         this.store.deleteAccount(key);
@@ -259,7 +275,10 @@ class AssistantApp {
       if (match && req.method === 'POST') return sendJson(res, 200, await this.worker.submitHeldTask(decodeURIComponent(match[1])));
 
       match = pathname.match(/^\/local\/v1\/tasks\/([^/]+)\/cancel-local$/);
-      if (match && req.method === 'POST') return sendJson(res, 200, await this.worker.cancelTask(decodeURIComponent(match[1])));
+      if (match && req.method === 'POST') {
+        this.requireLocalTask(decodeURIComponent(match[1]));
+        return sendJson(res, 200, await this.worker.cancelTask(decodeURIComponent(match[1])));
+      }
 
       if (pathname === '/local/v1/settings' && req.method === 'GET') {
         return sendJson(res, 200, { mode: this.config.mode, service_url: this.config.serviceUrl, automation_mode: this.config.automationMode, submit_mode: this.config.submitMode, browser: this.config.browser, startup_enabled: false });
@@ -291,6 +310,13 @@ class AssistantApp {
     const binding = this.store.getBinding();
     if (!account || !binding || (account.subject_key || null) !== (binding.subjectKey || null)) throw notFound('平台账号不存在');
     return account;
+  }
+
+  requireLocalTask(taskId) {
+    const local = this.store.getLocalTask(taskId);
+    const binding = this.store.getBinding();
+    if (!local || !binding || (local.subject_key || null) !== (binding.subjectKey || null)) throw notFound('本地任务不存在');
+    return local;
   }
 }
 

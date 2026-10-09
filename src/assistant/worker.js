@@ -34,14 +34,16 @@ class AssistantWorker {
 
   async stopAndDrain({ timeoutMs = 90000 } = {}) {
     this.stop();
+    const deadline = Date.now() + timeoutMs;
+    while (this.busy && Date.now() < deadline) await sleep(200);
+    if (this.busy) return false;
     for (const hold of this.heldTasks.values()) {
       clearInterval(hold.leaseTimer);
       await hold.adapter.close().catch(() => {});
+      this.store.updateLocalTask(hold.task.id, { last_error: { message: '绑定变更，本地接管已关闭', code: 'binding_change' } });
     }
     this.heldTasks.clear();
-    const deadline = Date.now() + timeoutMs;
-    while (this.busy && Date.now() < deadline) await sleep(200);
-    return !this.busy;
+    return true;
   }
 
   async loop() {
@@ -68,11 +70,11 @@ class AssistantWorker {
     if (this.heldTasks.size > 0) return;
     const binding = this.store.getBinding();
     if (!binding) return;
-    const result = await this.cloud.claimTask();
-    if (!result.task) return;
     this.busy = true;
-    this.currentTaskId = result.task.id;
     try {
+      const result = await this.cloud.claimTask();
+      if (!result.task) return;
+      this.currentTaskId = result.task.id;
       await this.handleTask(result.task);
     } finally {
       this.busy = false;
@@ -151,11 +153,11 @@ class AssistantWorker {
     if (!identity || !identity.identity) {
       return { verified: false, code: 'identity_unverifiable', message: '无法从平台页面读取当前账号身份，已阻止继续执行；请人工核对浏览器中登录的账号' };
     }
-    if (localAccount.platform_identity && localAccount.platform_identity !== identity.identity) {
-      return { verified: false, code: 'identity_mismatch', message: `平台身份不匹配：本机账号基线 ${localAccount.platform_identity} / 当前页面 ${identity.identity}` };
-    }
     if (!localAccount.platform_identity) {
-      this.store.updateAccountStatus(localAccount.account_key, { status: localAccount.status, platformIdentity: identity.identity });
+      return { verified: false, code: 'identity_baseline_missing', message: '本机账号尚无身份基线，已阻止自动执行；请在账号页人工登录后点击“检查登录状态”确认身份' };
+    }
+    if (localAccount.platform_identity !== identity.identity) {
+      return { verified: false, code: 'identity_mismatch', message: `平台身份不匹配：本机账号基线 ${localAccount.platform_identity} / 当前页面 ${identity.identity}` };
     }
     return { verified: true, identity };
   }
@@ -180,6 +182,13 @@ class AssistantWorker {
   }
 
   holdTask(task, adapter, stage, reason, { keepStatus } = {}) {
+    if (this.stopped) {
+      adapter.close().catch(() => {});
+      this.store.updateLocalTask(task.id, { last_error: { message: '助手正在停止，任务未挂起接管', code: 'worker_stopped' } });
+      this.busy = false;
+      this.currentTaskId = null;
+      return { outcome: 'aborted', reason };
+    }
     const hold = { task, adapter, stage, reason, held_at: new Date().toISOString(), leaseTimer: null };
     hold.leaseTimer = setInterval(() => {
       this.cloud.renewLease(task.id, task.attempt_id, true).catch(error => this.logger.warn('接管期间续租失败', { task_id: task.id, error: error.message }));
@@ -242,6 +251,7 @@ class AssistantWorker {
       await this.cloud.renewLease(task.id, task.attempt_id, false);
       await this.cloud.saveSubmissionIntent(task.id, task.attempt_id, task.content_version, task.account_id);
       const result = await this.executeSubmit(task, adapter);
+      if (result.outcome === 'held') return result;
       clearInterval(hold.leaseTimer);
       this.heldTasks.delete(taskId);
       return result;
@@ -258,7 +268,12 @@ class AssistantWorker {
       const localAccount = local && local.account_key ? this.store.getAccount(local.account_key) : null;
       if (localAccount) {
         const recheck = await this.verifyIdentity(task, localAccount, adapter);
-        if (!recheck.verified) throw new Error(`提交前身份核验未通过：${recheck.message}`);
+        if (!recheck.verified) {
+          if (this.heldTasks.has(task.id)) {
+            return { outcome: 'held', reason: { code: recheck.code, message: `提交前身份核验未通过：${recheck.message}` } };
+          }
+          throw new Error(`提交前身份核验未通过：${recheck.message}`);
+        }
       }
       const authorization = await this.cloud.authorizeSubmit(task.id, task.attempt_id, task.content_version);
       submitToken = authorization.submit_token;

@@ -58,6 +58,9 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
   }
 
   async checkLoginStateInternal({ navigateToLogin }) {
+    if (!navigateToLogin && !this.browser) {
+      return { loggedIn: false, readOnly: true, reason: 'browser_not_started', checked_at: new Date().toISOString() };
+    }
     const browser = await this.ensureBrowser(navigateToLogin ? this.selectors.loginUrl : undefined);
     const text = await browser.bodyText();
     const verification = await this.detectVerification();
