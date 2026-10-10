@@ -9,51 +9,76 @@ v24.21.0
 
 ===== npm test =====
 
-> qianjiang-wentian-publish-assistant@0.1.7-test test
+> qianjiang-wentian-publish-assistant@0.2.0-test test
 > node --test tests/*.test.js
 
-[2026-10-10T03:27:48.795Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
-[2026-10-10T03:27:48.809Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:62046' }
-[2026-10-10T03:27:48.970Z] INFO 素材下载完成 {
-  task_id: 'task_0HCG0BwEnY3ibMNV5keA4w',
+[2026-10-10T08:33:37.700Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-10T08:33:37.715Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:61246' }
+[2026-10-10T08:33:37.874Z] INFO 素材下载完成 {
+  task_id: 'task_ynST1gNkHMt1C8qxuthedw',
   bytes: 22,
   sha256: '88e0a88eb0384173eecb7479aed78475f8ecdd35d89d46f10cdbc3fdbcbe542c'
 }
-[2026-10-10T03:27:49.660Z] INFO 素材下载完成 {
-  task_id: 'task_XEgme87rPyi_R5WYyLLHng',
+[2026-10-10T08:33:38.562Z] INFO 素材下载完成 {
+  task_id: 'task_v-CeUHqvwxJB_OemdKzfRg',
   bytes: 17,
   sha256: 'c29ada37d61f176d01ea87832e59854b4dd919de50de32bdea481c607dcd220b'
 }
-✔ 模拟后端 + 助手核心完成端到端任务，默认停在提交前并可单次提交 (1812.0367ms)
-✔ F03：状态机禁止回退，提交授权每个 attempt 仅一次 (133.8253ms)
-[2026-10-10T03:27:49.037Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
-✔ F04：终态不可被设备结果覆盖，幂等键绑定原结果内容 (50.0949ms)
-✔ F08：生产/CDP 模式配置未加密存储开关时拒绝启动 (947.347ms)
-✔ F02：任意 Cookie 不再视为登录，身份读不到返回 null (20311.4591ms)
-✔ F02：worker 身份读不到或不匹配时阻止执行，无基线时需人工确认 (0.4474ms)
-✔ F07：verifyResult 等待跳转/结果特征，超时兜底 outcome_unknown (438.4245ms)
-✔ F02：只读登录检查在浏览器未启动时不打开窗口 (1.6879ms)
-[2026-10-10T03:28:10.138Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
-[2026-10-10T03:28:10.148Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:53441' }
-✔ F04：幂等键内容比较与键序无关，非法令牌类型返回 409 而非 500 (63.6207ms)
-✔ F01：换绑业务用户后本机账号、任务与云端同步按主体隔离 (321.5696ms)
-[2026-10-10T03:28:10.197Z] WARN 心跳或账号同步失败 { error: 'fetch failed', code: undefined }
-✔ 日志脱敏覆盖 token、cookie、password 和 Authorization (0.6526ms)
-✔ 平台和话题输入校验 (0.5873ms)
-✔ Windows 当前用户范围 DPAPI 真实往返 (1364.3485ms)
-✔ 绑定码单次使用，两个业务用户设备和账号互相隔离 (111.1306ms)
-✔ 素材与任务权限隔离，修改 ID 不能越权 (34.6855ms)
-✔ 并发领取同一任务只有一个成功，旧 attempt 被拒绝，回传幂等 (43.9096ms)
-✔ 设备撤销后不能继续领取或获得提交授权 (20.6275ms)
-✔ 提交中的任务不能取消，不明结果可由所属用户人工核实 (37.5062ms)
-✔ 恶意昵称和路径字段不能目录穿越 (1.3144ms)
-✔ 生产模式阻止本机和内网素材地址 (1.0004ms)
-✔ 下载校验来源、类型、大小和完整性，明确开发模式允许回环地址 (41.1807ms)
-ℹ tests 21
+✔ 模拟后端 + 助手核心完成端到端任务，默认停在提交前并可单次提交 (1852.2378ms)
+✔ F03：状态机禁止回退，提交授权每个 attempt 仅一次 (96.4608ms)
+[2026-10-10T08:33:37.938Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+✔ F04：终态不可被设备结果覆盖，幂等键绑定原结果内容 (57.5243ms)
+✔ F08：生产/CDP 模式配置未加密存储开关时拒绝启动 (995.0929ms)
+✔ F02：任意 Cookie 不再视为登录，身份读不到返回 null (20157.6715ms)
+✔ F02：worker 身份读不到或不匹配时阻止执行，无基线时需人工确认 (0.2749ms)
+✔ F07：verifyResult 等待跳转/结果特征，超时兜底 outcome_unknown (435.2746ms)
+✔ F02：只读登录检查在浏览器未启动时不打开窗口 (0.3859ms)
+[2026-10-10T08:33:58.875Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-10T08:33:58.887Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:62803' }
+✔ F04：幂等键内容比较与键序无关，非法令牌类型返回 409 而非 500 (67.5022ms)
+✔ F01：换绑业务用户后本机账号、任务与云端同步按主体隔离 (323.4103ms)
+[2026-10-10T08:33:58.936Z] WARN 心跳或账号同步失败 { error: 'fetch failed', code: undefined }
+✔ F05：上传未完成或失败时不进入待提交 (310.7323ms)
+✔ F11：恶意 task.id 被拒绝，下载路径不越界 (1.2242ms)
+✔ F06：验证类接管自动检测恢复，无需人工点继续 (122.6471ms)
+✔ F10：回传失败入 outbox，重放成功后清空 (21.7898ms)
+[2026-10-10T08:33:37.688Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-10T08:33:37.703Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:61248' }
+[2026-10-10T08:33:38.050Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-10T08:33:38.063Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:61289' }
+✔ 问天接口：视频详情、发布任务、幂等与越权 (974.9238ms)
+[2026-10-10T08:33:38.191Z] INFO 素材下载完成 {
+  task_id: 'task_oZJsMSnXVuPkaf69TB1XbQ',
+  bytes: 56,
+  sha256: '1e493eb6873a024598afc1eaf351184d0a21ccc64a532548d4bfa48483de1e18'
+}
+[2026-10-10T08:33:38.577Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-10T08:33:38.594Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:61298' }
+✔ 问天闭环：网页确认发布后助手自动下载执行提交，全程无桌面操作 (529.581ms)
+[2026-10-10T08:33:38.895Z] WARN 当前使用未加密秘密存储（insecure-dev）；仅限 simulation + simulated 开发降级，禁止用于真实平台账号 
+[2026-10-10T08:33:38.908Z] INFO 助手核心已启动 { mode: 'simulation', service: 'http://127.0.0.1:61305' }
+✔ 下载授权刷新：任务执行中可刷新，终态拒绝刷新 (324.3055ms)
+[2026-10-10T08:33:39.133Z] INFO 命令已执行 { command_id: 'cmd_pGxSil4RGSTsLXFkgALAVw', type: 'recheck_account' }
+✔ 设备命令队列：白名单、归属、助手执行与确认 (521.3482ms)
+✔ 日志脱敏覆盖 token、cookie、password 和 Authorization (0.715ms)
+✔ 平台和话题输入校验 (0.6948ms)
+✔ Windows 当前用户范围 DPAPI 真实往返 (1363.5035ms)
+✔ 绑定码单次使用，两个业务用户设备和账号互相隔离 (73.3373ms)
+✔ 素材与任务权限隔离，修改 ID 不能越权 (41.2658ms)
+✔ 并发领取同一任务只有一个成功，旧 attempt 被拒绝，回传幂等 (50.7834ms)
+✔ 设备撤销后不能继续领取或获得提交授权 (26.1289ms)
+✔ 提交中的任务不能取消，不明结果可由所属用户人工核实 (45.1275ms)
+✔ 恶意昵称和路径字段不能目录穿越 (1.3886ms)
+✔ 含中文的 .ps1 脚本必须带 UTF-8 BOM (0.7788ms)
+✔ 生产模式阻止本机和内网素材地址 (1.7896ms)
+✔ 下载校验来源、类型、大小和完整性，明确开发模式允许回环地址 (15.4171ms)
+✔ F09：IPv4 映射 IPv6 各种形式完整识别为内网 (0.4765ms)
+✔ F09：下载连接钉在已验证解析地址 (3.8458ms)
+ℹ tests 32
 ℹ suites 0
-ℹ pass 21
+ℹ pass 32
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 22449.1799
+ℹ duration_ms 22333.4491
