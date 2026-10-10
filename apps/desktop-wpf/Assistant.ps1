@@ -11,8 +11,8 @@ $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptRoot '..\..')
 $ConfigRelPath = $Config
 $ConfigPath = if ([IO.Path]::IsPathRooted($ConfigRelPath)) { $ConfigRelPath } else { Join-Path $RepoRoot $ConfigRelPath }
-$Config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$DataDir = if ([IO.Path]::IsPathRooted($Config.dataDir)) { $Config.dataDir } else { Join-Path $RepoRoot $Config.dataDir }
+$ConfigObj = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$DataDir = if ([IO.Path]::IsPathRooted($ConfigObj.dataDir)) { $ConfigObj.dataDir } else { Join-Path $RepoRoot $ConfigObj.dataDir }
 $RuntimePath = Join-Path $DataDir 'runtime.json'
 
 function Start-AssistantCore {

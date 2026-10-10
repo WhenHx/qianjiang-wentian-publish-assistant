@@ -13,7 +13,7 @@ public class Win32 {
 }
 "@
 
-$OutDir = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) '验收截图'
+$OutDir = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'acceptance\验收截图'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $proc = $null
