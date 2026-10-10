@@ -19,7 +19,8 @@ class SimulatedPlatformAdapter extends PlatformAdapter {
 
   async prepareTask() { return { prepared: true, simulated: true }; }
   async uploadVideo(videoPath) { return { uploaded: true, simulated: true, video_path: videoPath }; }
-  async fillFields(fields) { return { filled: true, simulated: true, fields: { title: fields.title, topics: fields.topics } }; }
+  async waitForUploadComplete() { return { ready: true, simulated: true }; }
+  async fillFields(fields) { return { filled: { title: true, description: true }, simulated: true, fields: { title: fields.title, topics: fields.topics } }; }
   async detectVerification() { return null; }
 
   async submitOnce() {

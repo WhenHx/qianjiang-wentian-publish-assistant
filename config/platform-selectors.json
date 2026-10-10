@@ -9,12 +9,42 @@
     "topicInput": "input[placeholder*='话题']",
     "coverButton": "button:has-text('设置封面'), [class*='cover']",
     "submitButton": "button:has-text('发布')",
-    "postSubmitSuccessUrls": ["content/manage"],
-    "loggedInIndicators": ["内容管理", "作品发布", "创作者服务中心"],
-    "identitySelectors": ["[class*='unique_id']"],
-    "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证", "滑块"],
-    "successPatterns": ["发布成功", "已发布", "审核中", "提交成功"],
-    "failurePatterns": ["发布失败", "上传失败", "审核不通过"]
+    "postSubmitSuccessUrls": [
+      "content/manage"
+    ],
+    "loggedInIndicators": [
+      "内容管理",
+      "作品发布",
+      "创作者服务中心"
+    ],
+    "identitySelectors": [
+      "[class*='unique_id']"
+    ],
+    "verificationPatterns": [
+      "验证码",
+      "扫码",
+      "登录",
+      "实名",
+      "安全验证",
+      "滑块"
+    ],
+    "successPatterns": [
+      "发布成功",
+      "已发布",
+      "审核中",
+      "提交成功"
+    ],
+    "failurePatterns": [
+      "发布失败",
+      "上传失败",
+      "审核不通过"
+    ],
+    "uploadReadySelectors": [
+      "video"
+    ],
+    "requiredFields": [
+      "description"
+    ]
   },
   "shipinhao": {
     "loginUrl": "https://channels.weixin.qq.com/platform",
@@ -26,12 +56,41 @@
     "topicInput": "",
     "coverButton": "",
     "submitButton": "button:has-text('发表')",
-    "postSubmitSuccessUrls": ["post/list"],
-    "loggedInIndicators": ["视频号ID", "关注者", "发表动态"],
-    "identitySelectors": [".finder-uniq-id", ".finder-nickname"],
-    "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证"],
-    "successPatterns": ["发表成功", "发布成功", "审核中"],
-    "failurePatterns": ["发表失败", "发布失败", "上传失败"]
+    "postSubmitSuccessUrls": [
+      "post/list"
+    ],
+    "loggedInIndicators": [
+      "视频号ID",
+      "关注者",
+      "发表动态"
+    ],
+    "identitySelectors": [
+      ".finder-uniq-id",
+      ".finder-nickname"
+    ],
+    "verificationPatterns": [
+      "验证码",
+      "扫码",
+      "登录",
+      "实名",
+      "安全验证"
+    ],
+    "successPatterns": [
+      "发表成功",
+      "发布成功",
+      "审核中"
+    ],
+    "failurePatterns": [
+      "发表失败",
+      "发布失败",
+      "上传失败"
+    ],
+    "uploadReadyPatterns": [
+      "封面预览"
+    ],
+    "requiredFields": [
+      "description"
+    ]
   },
   "kuaishou": {
     "loginUrl": "https://cp.kuaishou.com/profile",
@@ -42,11 +101,32 @@
     "topicInput": "input[placeholder*='话题']",
     "coverButton": "button:has-text('封面'), [class*='cover']",
     "submitButton": "button:has-text('发布'), button:has-text('提交')",
-    "loggedInIndicators": ["快手创作者服务平台", "发布视频", "内容管理"],
-    "identitySelectors": ["[class*='user-name']", "[class*='nickname']", "[class*='user-info']"],
-    "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证"],
-    "successPatterns": ["发布成功", "提交成功", "审核中"],
-    "failurePatterns": ["发布失败", "上传失败"]
+    "loggedInIndicators": [
+      "快手创作者服务平台",
+      "发布视频",
+      "内容管理"
+    ],
+    "identitySelectors": [
+      "[class*='user-name']",
+      "[class*='nickname']",
+      "[class*='user-info']"
+    ],
+    "verificationPatterns": [
+      "验证码",
+      "扫码",
+      "登录",
+      "实名",
+      "安全验证"
+    ],
+    "successPatterns": [
+      "发布成功",
+      "提交成功",
+      "审核中"
+    ],
+    "failurePatterns": [
+      "发布失败",
+      "上传失败"
+    ]
   },
   "xiaohongshu": {
     "loginUrl": "https://creator.xiaohongshu.com/",
@@ -57,12 +137,44 @@
     "topicInput": "input[placeholder*='话题']",
     "coverButton": "button:has-text('封面'), [class*='cover']",
     "submitButton": "xhs-publish-btn",
-    "submitClickAt": [0.62, 0.5],
-    "postSubmitSuccessUrls": ["publish/success"],
-    "loggedInIndicators": ["小红书创作服务平台", "发布笔记", "内容管理"],
-    "identitySelectors": ["text:小红书账号", ".account-name"],
-    "verificationPatterns": ["验证码", "扫码", "登录", "实名", "安全验证"],
-    "successPatterns": ["发布成功", "提交成功", "审核中"],
-    "failurePatterns": ["发布失败", "上传失败"]
+    "submitClickAt": [
+      0.62,
+      0.5
+    ],
+    "postSubmitSuccessUrls": [
+      "publish/success"
+    ],
+    "loggedInIndicators": [
+      "小红书创作服务平台",
+      "发布笔记",
+      "内容管理"
+    ],
+    "identitySelectors": [
+      "text:小红书账号",
+      ".account-name"
+    ],
+    "verificationPatterns": [
+      "验证码",
+      "扫码",
+      "登录",
+      "实名",
+      "安全验证"
+    ],
+    "successPatterns": [
+      "发布成功",
+      "提交成功",
+      "审核中"
+    ],
+    "failurePatterns": [
+      "发布失败",
+      "上传失败"
+    ],
+    "uploadReadyPatterns": [
+      "重新上传"
+    ],
+    "requiredFields": [
+      "title",
+      "description"
+    ]
   }
 }

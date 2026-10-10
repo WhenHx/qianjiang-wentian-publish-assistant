@@ -168,6 +168,34 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     return { filled, unverified: true };
   }
 
+  get requiredFields() { return this.selectors.requiredFields || ['description']; }
+
+  async waitForUploadComplete({ timeoutMs = 180000, pollMs = 2000 } = {}) {
+    const browser = await this.ensureBrowser();
+    const readySelectors = this.selectors.uploadReadySelectors || [];
+    const readyPatterns = this.selectors.uploadReadyPatterns || [];
+    const busyPatterns = this.selectors.uploadBusyPatterns || ['上传中', '转码中'];
+    const failurePatterns = this.selectors.uploadFailurePatterns || ['上传失败', '转码失败'];
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const text = await this.pageText(browser);
+      const failure = failurePatterns.find(item => text.includes(item));
+      if (failure) return { ready: false, failure };
+      let selectorsReady = readySelectors.length > 0;
+      for (const selector of readySelectors) {
+        const expr = `Boolean(document.querySelector(${JSON.stringify(selector)}))`;
+        const found = await browser.evaluate(this.frame ? browser.frameWrap(expr, this.frame) : expr).catch(() => false);
+        if (!found) { selectorsReady = false; break; }
+      }
+      const patternsReady = readyPatterns.length > 0 && readyPatterns.every(item => text.includes(item));
+      const readyConfigured = (readySelectors.length > 0 && selectorsReady) || patternsReady;
+      const busy = busyPatterns.find(item => text.includes(item));
+      if (readyConfigured && !busy) return { ready: true };
+      await sleep(pollMs);
+    }
+    return { ready: false, failure: 'timeout', message: '等待上传/转码完成超时' };
+  }
+
   async detectVerification() {
     const browser = await this.ensureBrowser();
     const text = await this.pageText(browser);

@@ -1,0 +1,16 @@
+{
+  "_comment": "正式运行姿态：真实浏览器操作 + 自动提交（用户已在网页确认发布即授权）。当前仍连接模拟云端；接真实问天时改 serviceUrl 并把 mode 调为 production。",
+  "mode": "simulation",
+  "serviceUrl": "http://127.0.0.1:8780",
+  "allowLoopbackMaterialUrls": true,
+  "dataDir": "runtime/assistant-data-auto",
+  "localApiHost": "127.0.0.1",
+  "localApiPort": 8783,
+  "browser": "edge",
+  "automationMode": "cdp",
+  "submitMode": "auto",
+  "pollIntervalMs": 3000,
+  "heartbeatIntervalMs": 15000,
+  "downloadDir": "runtime/downloads-auto",
+  "logDir": "runtime/logs-auto"
+}

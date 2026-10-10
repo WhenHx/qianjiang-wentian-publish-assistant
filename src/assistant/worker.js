@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomId } = require('../common/ids');
+const { randomId, assertSafeId } = require('../common/ids');
 const { safeFileName } = require('../common/paths');
 const { downloadChecked } = require('../common/urlSafety');
 const { sleep } = require('../common/retry');
@@ -126,11 +126,20 @@ class AssistantWorker {
 
       await this.progress(task, 'uploading', 50, '上传视频');
       await adapter.uploadVideo(videoPath);
+      const uploadReady = await adapter.waitForUploadComplete();
+      if (!uploadReady.ready) {
+        return this.holdTask(task, adapter, 'upload_incomplete', { type: 'upload_incomplete', message: `平台上传/转码未完成或失败：${uploadReady.failure || ''} ${uploadReady.message || ''}`.trim() });
+      }
       const verificationAfterUpload = await adapter.detectVerification();
       if (verificationAfterUpload) return this.holdTask(task, adapter, 'verification_after_upload', verificationAfterUpload);
 
       await this.progress(task, 'uploading', 70, '填写标题、描述和话题');
-      await adapter.fillFields({ title: task.title, description: task.description, topics: task.topics || [] });
+      const fillResult = await adapter.fillFields({ title: task.title, description: task.description, topics: task.topics || [] });
+      const required = adapter.requiredFields || ['description'];
+      const missing = required.filter(field => !fillResult.filled || !fillResult.filled[field]);
+      if (missing.length) {
+        return this.holdTask(task, adapter, 'fields_incomplete', { type: 'fields_incomplete', message: `必填字段未填写或未读回成功：${missing.join('、')}` });
+      }
       const verificationAfterFill = await adapter.detectVerification();
       if (verificationAfterFill) return this.holdTask(task, adapter, 'verification_after_fill', verificationAfterFill);
 
@@ -170,10 +179,13 @@ class AssistantWorker {
   }
 
   async downloadMaterial(task) {
+    assertSafeId(task.id, 'task_id');
     const dir = path.resolve(this.config.downloadDir || path.join(this.config.dataDir, 'downloads'));
     fs.mkdirSync(dir, { recursive: true });
     const filename = safeFileName(task.material_filename || `${task.id}.mp4`);
-    const destination = path.join(dir, `${task.id}-${filename}`);
+    const destination = path.resolve(dir, `${task.id}-${filename}`);
+    if (!destination.startsWith(dir + path.sep)) throw new Error('素材下载路径越界');
+    if (fs.existsSync(destination)) throw new Error(`素材缓存已存在，拒绝覆盖：${filename}`);
     const result = await downloadChecked(task.material_download_url, destination, {
       allowLoopback: Boolean(this.config.allowLoopbackMaterialUrls),
       expectedSha256: task.material_sha256,
