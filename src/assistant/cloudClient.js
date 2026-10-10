@@ -44,6 +44,9 @@ class CloudClient {
   heartbeat(assistantVersion) { return this.request('/api/v1/devices/heartbeat', { method: 'POST', body: { assistant_version: assistantVersion } }); }
   syncAccounts(accounts) { return this.request('/api/v1/accounts/sync', { method: 'POST', body: { accounts } }); }
   claimTask() { return this.request('/api/v1/tasks/claim', { method: 'POST', body: {} }); }
+  pollCommands() { return this.request('/api/v1/devices/commands'); }
+  ackCommand(commandId, ok, result) { return this.request(`/api/v1/commands/${encodeURIComponent(commandId)}/ack`, { method: 'POST', body: { ok, result } }); }
+  refreshMaterialDownload(taskId, attemptId) { return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/material-download`, { method: 'POST', body: { attempt_id: attemptId } }); }
   renewLease(taskId, attemptId, manualHold = false) { return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/lease`, { method: 'POST', body: { attempt_id: attemptId, manual_hold: manualHold } }); }
   progress(taskId, attemptId, status, progress, message, error) { return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/progress`, { method: 'POST', body: { attempt_id: attemptId, status, progress, message, error } }); }
   saveSubmissionIntent(taskId, attemptId, contentVersion, accountId) { return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/submission-intent`, { method: 'POST', body: { attempt_id: attemptId, content_version: contentVersion, account_id: accountId } }); }

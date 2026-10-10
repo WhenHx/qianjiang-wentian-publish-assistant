@@ -125,6 +125,7 @@ class AssistantApp {
         const subjectOk = this.reconcileSubject(result?.user_id);
         if (!subjectOk) return;
         await this.syncAccounts();
+        await this.pollCommands().catch(error => this.logger.warn('命令轮询失败', { error: error.message }));
       } catch (error) {
         this.logger.warn('心跳或账号同步失败', { error: error.message, code: error.code });
       }
@@ -188,6 +189,42 @@ class AssistantApp {
     const result = await this.cloud.syncAccounts(accounts);
     for (const mapping of result.accounts || []) this.store.updateAccountCloudId(mapping.account_key, mapping.account_id);
     return result;
+  }
+
+  async pollCommands() {
+    if (!this.store.getBinding()) return;
+    const result = await this.cloud.pollCommands();
+    for (const command of result.commands || []) {
+      await this.executeCommand(command).catch(error => this.logger.warn('命令执行失败', { command_id: command.id, error: error.message }));
+    }
+  }
+
+  async executeCommand(command) {
+    const accountKey = command.payload?.account_key;
+    const account = accountKey ? this.store.getAccount(accountKey) : null;
+    const binding = this.store.getBinding();
+    const subjectOk = account && binding && (account.subject_key || null) === (binding.subjectKey || null);
+    try {
+      if (!subjectOk) throw new Error('账号不存在或不属于当前业务主体');
+      if (command.type === 'open_login') {
+        const adapter = createPlatformAdapter(account.platform, { automationMode: this.config.automationMode, browserName: this.config.browser, account, logger: this.logger });
+        const loginResult = await adapter.login();
+        if (adapter.browser) this.openLoginBrowsers.set(account.account_key, adapter);
+        await this.cloud.ackCommand(command.id, true, { message: loginResult.message });
+      } else if (command.type === 'recheck_account') {
+        const adapter = this.openLoginBrowsers.get(account.account_key) || createPlatformAdapter(account.platform, { automationMode: this.config.automationMode, browserName: this.config.browser, account, logger: this.logger });
+        const check = await adapter.checkLoginState();
+        if (check.state) this.store.saveAccountState(account.account_key, check.state);
+        this.store.updateAccountStatus(account.account_key, { status: check.loggedIn ? 'logged_in' : 'login_required', platformIdentity: check.identity?.identity, lastCheckAt: new Date().toISOString() });
+        await this.syncAccounts().catch(() => {});
+        await this.cloud.ackCommand(command.id, true, { logged_in: check.loggedIn });
+      } else {
+        await this.cloud.ackCommand(command.id, false, { error: 'unsupported_command_type' });
+      }
+      this.logger.info('命令已执行', { command_id: command.id, type: command.type });
+    } catch (error) {
+      await this.cloud.ackCommand(command.id, false, { error: error.message }).catch(() => {});
+    }
   }
 
   requireLocalAuth(req) {

@@ -3,8 +3,20 @@ const path = require('node:path');
 const { randomId, assertSafeId } = require('../common/ids');
 const { safeFileName } = require('../common/paths');
 const { downloadChecked } = require('../common/urlSafety');
+const { HttpError } = require('../common/errors');
 const { sleep } = require('../common/retry');
 const { createPlatformAdapter } = require('./platforms');
+
+function isLikelyVideoFile(filePath) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const head = Buffer.alloc(16);
+    fs.readSync(fd, head, 0, 16, 0);
+    return head.slice(4, 8).toString('latin1') === 'ftyp';
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 class AssistantWorker {
   constructor({ config, store, cloud, logger }) {
@@ -191,20 +203,67 @@ class AssistantWorker {
     assertSafeId(task.id, 'task_id');
     const dir = path.resolve(this.config.downloadDir || path.join(this.config.dataDir, 'downloads'));
     fs.mkdirSync(dir, { recursive: true });
-    const filename = safeFileName(task.material_filename || `${task.id}.mp4`);
-    const destination = path.resolve(dir, `${task.id}-${filename}`);
+    const material = task.material || {
+      material_id: task.material_id || task.id,
+      download_url: task.material_download_url,
+      filename: task.material_filename,
+      content_type: task.material_content_type,
+      size_bytes: null,
+      sha256: task.material_sha256 || null
+    };
+    const keyParts = [String(material.material_id || task.id)];
+    if (task.video_version) keyParts.push(String(task.video_version));
+    const cacheKey = keyParts.map(part => part.replace(/[^A-Za-z0-9_-]/g, '_')).filter(Boolean).join('-');
+    const filename = safeFileName(material.filename || 'video.mp4');
+    const destination = path.resolve(dir, `${cacheKey}-${filename}`);
     if (!destination.startsWith(dir + path.sep)) throw new Error('素材下载路径越界');
     if (fs.existsSync(destination)) {
-      if (allowExisting) return destination;
-      throw new Error(`素材缓存已存在，拒绝覆盖：${filename}`);
+      const stat = fs.statSync(destination);
+      const sizeOk = material.size_bytes == null || stat.size === material.size_bytes;
+      if (sizeOk) {
+        this.logger.info('素材命中本机缓存', { task_id: task.id, material_id: material.material_id });
+        return destination;
+      }
+      fs.rmSync(destination, { force: true });
     }
-    const result = await downloadChecked(task.material_download_url, destination, {
-      allowLoopback: Boolean(this.config.allowLoopbackMaterialUrls),
-      expectedSha256: task.material_sha256,
-      allowedContentTypePrefixes: ['video/', 'application/octet-stream']
-    });
-    this.logger.info('素材下载完成', { task_id: task.id, bytes: result.bytes, sha256: result.sha256 });
-    return destination;
+
+    let downloadUrl = material.download_url;
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const tmpPath = `${destination}.tmp-${randomId('dl', 6)}`;
+      try {
+        const result = await downloadChecked(downloadUrl, tmpPath, {
+          allowLoopback: Boolean(this.config.allowLoopbackMaterialUrls),
+          expectedSha256: material.sha256 || undefined,
+          expectedBytes: material.size_bytes ?? undefined,
+          allowedContentTypePrefixes: ['video/', 'application/octet-stream']
+        });
+        if ((result.contentType || '').startsWith('video/') && !isLikelyVideoFile(tmpPath)) {
+          fs.rmSync(tmpPath, { force: true });
+          throw new HttpError(422, 'material_not_a_video', '素材内容不是有效视频编码');
+        }
+        fs.renameSync(tmpPath, destination);
+        this.logger.info('素材下载完成', { task_id: task.id, bytes: result.bytes, sha256: result.sha256 });
+        return destination;
+      } catch (error) {
+        fs.rmSync(tmpPath, { force: true });
+        lastError = error;
+        const status = error.statusCode || 0;
+        const canRefresh = [401, 403, 410].includes(status) && task.attempt_id && task.id;
+        if (canRefresh && attempt === 0) {
+          this.logger.warn('素材下载授权失效，申请刷新', { task_id: task.id, status });
+          const refreshed = await this.cloud.refreshMaterialDownload(task.id, task.attempt_id);
+          downloadUrl = refreshed.material.download_url;
+          continue;
+        }
+        if ((status === 429 || status >= 500) && attempt === 0) {
+          await sleep(3000);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
   }
 
   async progress(task, status, progress, message, error) {
@@ -352,6 +411,7 @@ class AssistantWorker {
   }
 
   async executeSubmit(task, adapter) {
+    clearInterval(this.execLeaseTimer);
     let submitToken = null;
     try {
       const local = this.store.getLocalTask(task.id);

@@ -72,6 +72,29 @@
     </section>
 
     <section class="card">
+      <h2>5. 已有视频 → 确认发布（问天式流程）</h2>
+      <p>模拟“千匠问天已有视频详情页”：选择视频，确认发布选项后创建任务。无需上传文件。</p>
+      <div class="form-grid">
+        <label>视频 <select id="videoSelect"></select></label>
+        <label>平台
+          <select id="pubPlatform">
+            <option value="douyin">抖音</option>
+            <option value="shipinhao">视频号</option>
+            <option value="kuaishou">快手</option>
+            <option value="xiaohongshu">小红书</option>
+          </select>
+        </label>
+        <label>账号 <select id="pubAccountSelect"></select></label>
+        <label>设备 <select id="pubDeviceSelect"></select></label>
+        <label>标题 <input id="pubTitle" maxlength="120" value="真机验证测试视频"></label>
+        <label>话题（逗号分隔） <input id="pubTopics" value="测试"></label>
+      </div>
+      <label>描述 <textarea id="pubDescription" rows="3">通过视频详情页确认发布的测试任务</textarea></label>
+      <div id="videoDetail"></div>
+      <button id="publishVideo">确认发布</button>
+    </section>
+
+    <section class="card">
       <h2>6. 任务进度 / 人工接管 / 结果</h2>
       <button id="refreshTasks">刷新任务</button>
       <div id="tasks"></div>

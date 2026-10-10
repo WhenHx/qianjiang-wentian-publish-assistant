@@ -38,7 +38,8 @@ class MockBackendServer {
     this.store = new MockBackendStore({
       databasePath,
       storageDir: path.resolve(config.storageDir || path.join(path.dirname(databasePath), 'materials')),
-      publicBaseUrl: config.publicBaseUrl || `http://${config.host || '127.0.0.1'}:${config.port || 8780}`
+      publicBaseUrl: config.publicBaseUrl || `http://${config.host || '127.0.0.1'}:${config.port || 8780}`,
+      demoVideoPath: config.demoVideoPath || process.env.MOCK_DEMO_VIDEO_PATH || ''
     });
     if (config.seedDemoData !== false) this.demoUsers = this.store.seedDemoData();
     this.consoleDir = path.resolve(__dirname, '../mock-console');
@@ -95,6 +96,88 @@ class MockBackendServer {
       if (pathname === '/health') return sendJson(res, 200, { ok: true, mode: this.config.mode || 'simulation', now: new Date().toISOString() });
       if (pathname === '/' || pathname === '/console' || pathname.startsWith('/console/')) return this.serveConsole(pathname, res);
       if (pathname === '/api/v1/platform-capabilities' && req.method === 'GET') return sendJson(res, 200, this.capabilities);
+
+      if (pathname === '/api/v1/videos' && req.method === 'GET') {
+        const user = this.requireUser(req);
+        return sendJson(res, 200, { videos: this.store.listVideos(user.id) });
+      }
+
+      let vm = pathname.match(/^\/api\/v1\/videos\/([^/]+)$/);
+      if (vm && req.method === 'GET') {
+        const user = this.requireUser(req);
+        const video = this.store.getVideo(decodeURIComponent(vm[1]));
+        if (!video || video.user_id !== user.id) throw notFound('视频不存在');
+        return sendJson(res, 200, { video: { ...video } });
+      }
+
+      if (pathname === '/api/v1/publish-tasks' && req.method === 'POST') {
+        const user = this.requireUser(req);
+        const body = await readJsonBody(req, 1024 * 1024);
+        const deviceId = requireString(body.device_id, 'device_id', { max: 160 });
+        const accountId = requireString(body.account_id, 'account_id', { max: 160 });
+        const platform = requirePlatform(body.platform);
+        const device = this.store.listDevices(user.id).find(item => item.id === deviceId && item.status === 'active');
+        if (!device) throw forbidden('设备不存在、已撤销或不属于当前用户');
+        const account = this.store.listAccounts(user.id).find(item => item.id === accountId);
+        if (!account || account.device_id !== deviceId || account.platform !== platform) throw forbidden('平台账号不存在、设备不匹配或平台不一致');
+        const result = this.store.createPublishTask({
+          userId: user.id,
+          deviceId,
+          accountId,
+          platform,
+          title: requireString(body.title, 'title', { max: 120 }),
+          description: optionalString(body.description, 'description', { max: 3000 }),
+          topics: requireTopics(body.topics),
+          videoId: requireString(body.video_id, 'video_id', { max: 160 }),
+          videoVersion: requireString(body.video_version, 'video_version', { max: 40 }),
+          executionMode: optionalString(body.execution_mode, 'execution_mode', { max: 40 }) || 'desktop_assistant',
+          idempotencyKey: requireString(body.idempotency_key, 'idempotency_key', { max: 160, pattern: /^[A-Za-z0-9_.:-]+$/ })
+        });
+        if (result.error) return sendJson(res, result.error.status, { error: result.error });
+        return sendJson(res, result.created ? 201 : 200, { task: result.task, idempotent_replay: !result.created });
+      }
+
+      vm = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/material-download$/);
+      if (vm && req.method === 'POST') {
+        const device = this.requireDevice(req);
+        const body = await readJsonBody(req);
+        const result = this.store.refreshMaterialDownload({
+          taskId: decodeURIComponent(vm[1]),
+          device,
+          attemptId: requireString(body.attempt_id, 'attempt_id', { max: 160 })
+        });
+        if (!result.ok) return sendJson(res, result.status || 409, { error: { code: result.code, message: result.message } });
+        return sendJson(res, 200, result);
+      }
+
+      vm = pathname.match(/^\/api\/v1\/devices\/([^/]+)\/commands$/);
+      if (vm && req.method === 'POST') {
+        const user = this.requireUser(req);
+        const body = await readJsonBody(req);
+        const result = this.store.createCommand({
+          userId: user.id,
+          deviceId: decodeURIComponent(vm[1]),
+          type: requireString(body.type, 'type', { max: 40 }),
+          payload: body.payload && typeof body.payload === 'object' ? body.payload : {},
+          idempotencyKey: optionalString(body.idempotency_key, 'idempotency_key', { max: 160 })
+        });
+        if (result.error) return sendJson(res, result.error.status, { error: result.error });
+        return sendJson(res, result.created ? 201 : 200, { command: result.command, idempotent_replay: !result.created });
+      }
+
+      if (pathname === '/api/v1/devices/commands' && req.method === 'GET') {
+        const device = this.requireDevice(req);
+        return sendJson(res, 200, { commands: this.store.pollCommands(device) });
+      }
+
+      vm = pathname.match(/^\/api\/v1\/commands\/([^/]+)\/ack$/);
+      if (vm && req.method === 'POST') {
+        const device = this.requireDevice(req);
+        const body = await readJsonBody(req);
+        const result = this.store.ackCommand({ commandId: decodeURIComponent(vm[1]), device, ok: body.ok !== false, result: body.result });
+        if (!result.ok) return sendJson(res, result.status || 409, { error: { code: result.code, message: result.message } });
+        return sendJson(res, 200, result);
+      }
 
       if (pathname === '/api/v1/bindings' && req.method === 'POST') {
         const body = await readJsonBody(req);
@@ -363,6 +446,7 @@ class MockBackendServer {
 
       throw notFound('接口不存在');
     } catch (error) {
+      if (process.env.MOCK_DEBUG) console.error('MOCK_DEBUG', req.method, req.url, error.message);
       sendError(res, error);
     }
   }

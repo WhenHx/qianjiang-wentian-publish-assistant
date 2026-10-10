@@ -31,13 +31,48 @@ function parseJson(value, fallback = null) {
 }
 
 class MockBackendStore {
-  constructor({ databasePath, storageDir, publicBaseUrl }) {
+  constructor({ databasePath, storageDir, publicBaseUrl, demoVideoPath }) {
     this.db = openDatabase(databasePath);
     this.storageDir = storageDir || path.join(path.dirname(databasePath), 'materials');
     this.publicBaseUrl = publicBaseUrl;
+    this.demoVideoPath = demoVideoPath || '';
     this.secret = process.env.MOCK_BACKEND_SECRET || randomId('mocksecret', 24);
     fs.mkdirSync(this.storageDir, { recursive: true });
-    migrate(this.db, [{ version: 1, up: db => this.createSchema(db) }]);
+    migrate(this.db, [
+      { version: 1, up: db => this.createSchema(db) },
+      { version: 2, up: db => this.migrateV2(db) }
+    ]);
+  }
+
+  migrateV2(db) {
+    db.exec(`
+ALTER TABLE tasks ADD COLUMN execution_mode TEXT;
+ALTER TABLE tasks ADD COLUMN video_id TEXT;
+ALTER TABLE tasks ADD COLUMN video_version TEXT;
+CREATE TABLE videos (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('ready','processing','invalid')),
+  material_id TEXT NOT NULL REFERENCES materials(id),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_videos_user ON videos(user_id);
+CREATE TABLE commands (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  device_id TEXT NOT NULL REFERENCES devices(id),
+  type TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL CHECK(status IN ('pending','done','failed','expired')),
+  result_json TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  done_at TEXT
+);
+CREATE INDEX idx_commands_device ON commands(device_id, status);
+`);
   }
 
   createSchema(db) {
@@ -165,6 +200,21 @@ CREATE TABLE reports (
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(login_name) DO UPDATE SET display_name=excluded.display_name`)
         .run(user.id, user.login, user.name, sha256Buffer(Buffer.from(user.token)), now);
+    }
+    for (const user of users) {
+      const existing = this.db.prepare('SELECT id FROM videos WHERE user_id=?').get(user.id);
+      if (existing) continue;
+      let buffer = Buffer.from('QIANJIANG_WENTIAN_CONTROLLED_TEST_ASSET_NOT_A_REAL_VIDEO');
+      let contentType = 'application/octet-stream';
+      let filename = 'controlled-test-asset.bin';
+      if (this.demoVideoPath && fs.existsSync(this.demoVideoPath)) {
+        buffer = fs.readFileSync(this.demoVideoPath);
+        contentType = 'video/mp4';
+        filename = path.basename(this.demoVideoPath);
+      }
+      const material = this.createMaterial({ userId: user.id, filename, contentType, buffer });
+      this.db.prepare('INSERT INTO videos (id,user_id,name,version,status,material_id,created_at) VALUES (?,?,?,?,?,?,?)')
+        .run(randomId('video'), user.id, '演示视频（千匠问天已制作）', 'v1', 'ready', material.id, now);
     }
     return users.map(({ token, ...rest }) => rest);
   }
@@ -344,6 +394,79 @@ CREATE TABLE reports (
     return this.db.prepare('SELECT * FROM tasks WHERE device_id=? ORDER BY created_at DESC').all(deviceId).map(row => this.decorateTask(row));
   }
 
+  listVideos(userId) {
+    return this.db.prepare('SELECT id,user_id,name,version,status,created_at FROM videos WHERE user_id=? ORDER BY created_at DESC').all(userId);
+  }
+
+  getVideo(id) { return this.db.prepare('SELECT * FROM videos WHERE id=?').get(id); }
+
+  createPublishTask({ userId, deviceId, accountId, platform, title, description, topics, videoId, videoVersion, executionMode, idempotencyKey }) {
+    const existing = this.db.prepare('SELECT * FROM tasks WHERE user_id=? AND idempotency_key=?').get(userId, idempotencyKey);
+    if (existing) return { task: this.decorateTask(existing), created: false };
+    const video = this.getVideo(videoId);
+    if (!video || video.user_id !== userId) return { error: { status: 404, code: 'video_not_found', message: '视频不存在或不属于当前用户' } };
+    if (video.status !== 'ready') return { error: { status: 409, code: 'video_not_ready', message: `视频未准备好（${video.status}），制作完成前不能发布` } };
+    if (video.version !== videoVersion) return { error: { status: 409, code: 'video_version_mismatch', message: `视频版本已变化（当前 ${video.version}），请重新确认发布内容` } };
+    const created = this.createTask({ userId, deviceId, accountId, platform, title, description, topics, materialId: video.material_id, idempotencyKey });
+    if (created.created === false && created.task) return { task: created.task, created: false };
+    this.db.prepare('UPDATE tasks SET execution_mode=?, video_id=?, video_version=? WHERE id=?')
+      .run(executionMode || 'desktop_assistant', videoId, videoVersion, created.task.id);
+    this.addTaskEvent(created.task.id, 'user', 'publish_confirmed', { video_id: videoId, video_version: videoVersion, execution_mode: executionMode || 'desktop_assistant' });
+    return { task: this.decorateTask(this.getTask(created.task.id)), created: true };
+  }
+
+  refreshMaterialDownload({ taskId, device, attemptId }) {
+    const { task, error } = this.requireTaskForDevice(taskId, device, attemptId);
+    if (error) return { ok: false, status: error === 'attempt_mismatch' ? 409 : 404, code: error, message: '任务归属或执行实例不匹配' };
+    if (TERMINAL_STATUSES.has(task.status)) return { ok: false, status: 409, code: 'task_terminal', message: '任务已结束，不能刷新素材授权' };
+    if (task.cancel_requested) return { ok: false, status: 409, code: 'task_cancelled', message: '任务已取消' };
+    const material = this.getMaterial(task.material_id);
+    if (!material) return { ok: false, status: 404, code: 'material_not_found', message: '素材不存在' };
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    return {
+      ok: true,
+      material: {
+        material_id: material.id,
+        download_url: this.materialDownloadUrl(material),
+        download_url_expires_at: expiresAt,
+        filename: material.filename,
+        content_type: material.content_type,
+        size_bytes: material.bytes,
+        sha256: material.sha256 || null
+      }
+    };
+  }
+
+  createCommand({ userId, deviceId, type, payload, idempotencyKey }) {
+    const ALLOWED = new Set(['open_login', 'recheck_account']);
+    if (!ALLOWED.has(type)) return { error: { status: 400, code: 'command_not_allowed', message: '命令类型不在白名单' } };
+    const device = this.db.prepare(`SELECT * FROM devices WHERE id=? AND user_id=? AND status='active'`).get(deviceId, userId);
+    if (!device) return { error: { status: 403, code: 'forbidden', message: '设备不存在或不属于当前用户' } };
+    const dedupeKey = idempotencyKey || `${type}:${payload?.account_key || ''}`;
+    const existing = this.db.prepare(`SELECT * FROM commands WHERE device_id=? AND status='pending' AND type=? AND payload_json=?`).get(deviceId, type, json(payload || {}));
+    if (existing) return { command: existing, created: false };
+    const id = randomId('cmd');
+    const now = nowIso();
+    this.db.prepare('INSERT INTO commands (id,user_id,device_id,type,payload_json,status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?)')
+      .run(id, userId, deviceId, type, json(payload || {}), 'pending', addMs(10 * 60 * 1000), now);
+    return { command: this.db.prepare('SELECT * FROM commands WHERE id=?').get(id), created: true };
+  }
+
+  pollCommands(device) {
+    const now = nowIso();
+    this.db.prepare(`UPDATE commands SET status='expired' WHERE device_id=? AND status='pending' AND expires_at<=?`).run(device.id, now);
+    return this.db.prepare(`SELECT * FROM commands WHERE device_id=? AND status='pending' ORDER BY created_at ASC LIMIT 10`).all(device.id)
+      .map(row => ({ ...row, payload: parseJson(row.payload_json, {}), payload_json: undefined }));
+  }
+
+  ackCommand({ commandId, device, result, ok }) {
+    const row = this.db.prepare(`SELECT * FROM commands WHERE id=? AND device_id=? AND status='pending'`).get(commandId, device.id);
+    if (!row) return { ok: false, status: 404, code: 'command_not_found', message: '命令不存在或已处理' };
+    this.db.prepare(`UPDATE commands SET status=?, result_json=?, done_at=? WHERE id=?`)
+      .run(ok ? 'done' : 'failed', json(result || {}), nowIso(), commandId);
+    return { ok: true };
+  }
+
   claimTask(device) {
     return immediateTransaction(this.db, () => {
       const row = this.db.prepare(`SELECT * FROM tasks
@@ -363,6 +486,15 @@ CREATE TABLE reports (
       decorated.material_sha256 = material.sha256;
       decorated.material_filename = material.filename;
       decorated.material_content_type = material.content_type;
+      decorated.material = {
+        material_id: material.id,
+        download_url: decorated.material_download_url,
+        download_url_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        filename: material.filename,
+        content_type: material.content_type,
+        size_bytes: material.bytes,
+        sha256: material.sha256 || null
+      };
       return decorated;
     });
   }
