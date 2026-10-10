@@ -163,13 +163,13 @@ class AssistantWorker {
       const verificationAfterFill = await adapter.detectVerification();
       if (verificationAfterFill) return this.holdTask(task, adapter, 'verification_after_fill', verificationAfterFill);
 
-      await this.progress(task, 'ready_to_submit', 90, '上传和填写完成，等待提交授权');
       await this.cloud.saveSubmissionIntent(task.id, task.attempt_id, task.content_version, task.account_id);
       this.store.updateLocalTask(task.id, {
         status: 'ready_to_submit',
         progress: 90,
         submit_intent: { saved_at: new Date().toISOString(), content_version: task.content_version, account_id: task.account_id }
       });
+      await this.progress(task, 'ready_to_submit', 90, '上传和填写完成，等待提交授权');
 
       if ((this.config.submitMode || 'hold_before_submit') === 'hold_before_submit') {
         return this.holdTask(task, adapter, 'hold_before_submit', { type: 'submit_hold', message: '开发测试默认停在最终提交前；确认后可在桌面端执行一次提交。' }, { keepStatus: 'ready_to_submit' });
@@ -393,9 +393,9 @@ class AssistantWorker {
       }
       const verificationAfterResume = await adapter.detectVerification();
       if (verificationAfterResume) throw new Error(verificationAfterResume.message || '仍存在平台验证');
-      await this.progress(task, 'ready_to_submit', 90, '人工处理完成，重新检查通过，等待最终提交');
       await this.cloud.saveSubmissionIntent(task.id, task.attempt_id, task.content_version, task.account_id);
       this.store.updateLocalTask(task.id, { submit_intent: { saved_at: new Date().toISOString(), content_version: task.content_version, account_id: task.account_id } });
+      await this.progress(task, 'ready_to_submit', 90, '人工处理完成，重新检查通过，等待最终提交');
       clearInterval(hold.watchTimer);
       hold.stage = 'hold_before_submit';
       if ((this.config.submitMode || 'hold_before_submit') !== 'hold_before_submit') {
