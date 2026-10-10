@@ -17,6 +17,7 @@ class AssistantWorker {
     this.stopped = false;
     this.heldTasks = new Map();
     this.currentTaskId = null;
+    this.paused = false;
   }
 
   start() {
@@ -39,6 +40,7 @@ class AssistantWorker {
     if (this.busy) return false;
     for (const hold of this.heldTasks.values()) {
       clearInterval(hold.leaseTimer);
+      clearInterval(hold.watchTimer);
       await hold.adapter.close().catch(() => {});
       this.store.updateLocalTask(hold.task.id, { last_error: { message: '绑定变更，本地接管已关闭', code: 'binding_change' } });
     }
@@ -61,12 +63,14 @@ class AssistantWorker {
     return {
       running: this.running,
       busy: this.busy,
+      paused: this.paused,
       current_task_id: this.currentTaskId,
       held_tasks: [...this.heldTasks.keys()]
     };
   }
 
   async runOnce() {
+    if (this.paused) return;
     if (this.heldTasks.size > 0) return;
     const binding = this.store.getBinding();
     if (!binding) return;
@@ -105,6 +109,10 @@ class AssistantWorker {
       logger: this.logger
     });
     if (borrowed) adapter.borrowedFromLogin = true;
+    clearInterval(this.execLeaseTimer);
+    this.execLeaseTimer = setInterval(() => {
+      this.cloud.renewLease(task.id, task.attempt_id, false).catch(error => this.logger.warn('执行期间续租失败', { task_id: task.id, error: error.message }));
+    }, 30000);
     let submitToken = null;
     try {
       await this.progress(task, 'downloading', 10, '开始下载授权素材');
@@ -157,6 +165,7 @@ class AssistantWorker {
       return await this.executeSubmit(task, adapter);
     } catch (error) {
       this.logger.error('任务执行失败', { task_id: task.id, error: error.message });
+      clearInterval(this.execLeaseTimer);
       await this.closeAdapter(adapter);
       await this.reportSafely(task, 'failed', {}, { message: error.message, code: error.code || 'worker_failed' }, submitToken);
       this.store.updateLocalTask(task.id, { status: 'failed', last_error: { message: error.message, code: error.code || 'worker_failed' } });
@@ -178,14 +187,17 @@ class AssistantWorker {
     return { verified: true, identity };
   }
 
-  async downloadMaterial(task) {
+  async downloadMaterial(task, { allowExisting = false } = {}) {
     assertSafeId(task.id, 'task_id');
     const dir = path.resolve(this.config.downloadDir || path.join(this.config.dataDir, 'downloads'));
     fs.mkdirSync(dir, { recursive: true });
     const filename = safeFileName(task.material_filename || `${task.id}.mp4`);
     const destination = path.resolve(dir, `${task.id}-${filename}`);
     if (!destination.startsWith(dir + path.sep)) throw new Error('素材下载路径越界');
-    if (fs.existsSync(destination)) throw new Error(`素材缓存已存在，拒绝覆盖：${filename}`);
+    if (fs.existsSync(destination)) {
+      if (allowExisting) return destination;
+      throw new Error(`素材缓存已存在，拒绝覆盖：${filename}`);
+    }
     const result = await downloadChecked(task.material_download_url, destination, {
       allowLoopback: Boolean(this.config.allowLoopbackMaterialUrls),
       expectedSha256: task.material_sha256,
@@ -201,6 +213,7 @@ class AssistantWorker {
   }
 
   holdTask(task, adapter, stage, reason, { keepStatus } = {}) {
+    clearInterval(this.execLeaseTimer);
     if (this.stopped) {
       this.closeAdapter(adapter).catch(() => {});
       this.store.updateLocalTask(task.id, { last_error: { message: '助手正在停止，任务未挂起接管', code: 'worker_stopped' } });
@@ -208,10 +221,11 @@ class AssistantWorker {
       this.currentTaskId = null;
       return { outcome: 'aborted', reason };
     }
-    const hold = { task, adapter, stage, reason, held_at: new Date().toISOString(), leaseTimer: null };
+    const hold = { task, adapter, stage, reason, held_at: new Date().toISOString(), leaseTimer: null, watchTimer: null, resuming: false };
     hold.leaseTimer = setInterval(() => {
       this.cloud.renewLease(task.id, task.attempt_id, true).catch(error => this.logger.warn('接管期间续租失败', { task_id: task.id, error: error.message }));
     }, 30000);
+    if (stage !== 'hold_before_submit') hold.watchTimer = this.startVerificationWatch(hold);
     this.heldTasks.set(task.id, hold);
     const status = keepStatus || 'needs_user_action';
     this.cloud.progress(task.id, task.attempt_id, status, keepStatus ? 90 : task.progress || 60, reason.message || '需要人工处理', reason)
@@ -222,14 +236,65 @@ class AssistantWorker {
     return { outcome: 'held', reason };
   }
 
-  async continueTask(taskId) {
+  startVerificationWatch(hold) {
+    const interval = this.config.verificationWatchIntervalMs || 15000;
+    const maxWait = this.config.verificationWatchTimeoutMs || 30 * 60 * 1000;
+    let strikes = 0;
+    return setInterval(async () => {
+      if (this.stopped || hold.resuming || hold.stage === 'hold_before_submit') return;
+      if (Date.now() - Date.parse(hold.held_at) > maxWait) {
+        await this.failHeldTask(hold.task.id, '平台验证/登录等待超时', 'verification_timeout');
+        return;
+      }
+      const { task, adapter } = hold;
+      try {
+        const login = await adapter.checkLoginStateReadOnly();
+        if (login.reason === 'browser_not_started') {
+          strikes += 1;
+          if (strikes >= 4) await this.failHeldTask(task.id, '浏览器已被关闭，无法继续', 'browser_closed');
+          return;
+        }
+        if (await adapter.detectVerification()) return;
+        if (!login.loggedIn) return;
+        hold.resuming = true;
+        this.logger.info('检测到平台验证已完成，自动恢复任务', { task_id: task.id });
+        try {
+          await this.continueTask(task.id, { fromWatch: true });
+        } catch (error) {
+          this.logger.warn('自动恢复失败，等待下次检测', { task_id: task.id, error: error.message });
+        } finally {
+          hold.resuming = false;
+        }
+      } catch (error) {
+        strikes += 1;
+        this.logger.warn('接管监视检查失败', { task_id: task.id, error: error.message, strikes });
+        if (strikes >= 8) await this.failHeldTask(task.id, `接管监视持续失败：${error.message}`, 'watch_failed');
+      }
+    }, interval);
+  }
+
+  async failHeldTask(taskId, message, code) {
+    const hold = this.heldTasks.get(taskId);
+    if (!hold) return;
+    clearInterval(hold.leaseTimer);
+    clearInterval(hold.watchTimer);
+    await this.closeAdapter(hold.adapter);
+    this.heldTasks.delete(taskId);
+    await this.reportSafely(hold.task, 'failed', {}, { message, code }, null);
+    this.store.updateLocalTask(taskId, { status: 'failed', last_error: { message, code } });
+  }
+
+  async continueTask(taskId, { fromWatch = false } = {}) {
     const hold = this.heldTasks.get(taskId);
     if (!hold) throw new Error('任务不在人工接管或待提交保持状态');
-    const { task, adapter, stage } = hold;
+    if (hold.resuming && !fromWatch) throw new Error('任务正在自动恢复中，请稍候');
+    const { task, adapter } = hold;
+    const stage = hold.stage;
     this.busy = true;
     this.currentTaskId = taskId;
     try {
-      const login = await adapter.checkLoginState();
+      const login = await adapter.checkLoginStateReadOnly();
+      if (login.reason === 'browser_not_started') throw new Error('浏览器未运行，无法只读恢复；请重新打开登录窗口');
       if (login.needsUserAction || !login.loggedIn) throw new Error('平台登录或验证仍未完成');
       const verification = await adapter.detectVerification();
       if (verification) throw new Error(verification.message || '仍存在平台验证');
@@ -243,15 +308,21 @@ class AssistantWorker {
         if (prepared.verification) throw new Error(prepared.verification.message || '仍存在平台验证');
         await this.progress(task, 'uploading', 50, '人工处理完成，从上传视频阶段恢复');
         await adapter.uploadVideo(videoPath);
+        const uploadReady = await adapter.waitForUploadComplete();
+        if (!uploadReady.ready) throw new Error(`恢复后上传未完成：${uploadReady.failure || uploadReady.message || ''}`);
       }
       if (stage === 'login_or_verification' || stage === 'verification_before_upload' || stage === 'verification_after_upload') {
         await this.progress(task, 'uploading', 70, '人工处理完成，从填写字段阶段恢复');
-        await adapter.fillFields({ title: task.title, description: task.description, topics: task.topics || [] });
+        const fillResult = await adapter.fillFields({ title: task.title, description: task.description, topics: task.topics || [] });
+        const required = adapter.requiredFields || ['description'];
+        const missing = required.filter(field => !fillResult.filled || !fillResult.filled[field]);
+        if (missing.length) throw new Error(`恢复后必填字段读回失败：${missing.join('、')}`);
       }
       const verificationAfterResume = await adapter.detectVerification();
       if (verificationAfterResume) throw new Error(verificationAfterResume.message || '仍存在平台验证');
       await this.progress(task, 'ready_to_submit', 90, '人工处理完成，重新检查通过，等待最终提交');
       await this.cloud.saveSubmissionIntent(task.id, task.attempt_id, task.content_version, task.account_id);
+      clearInterval(hold.watchTimer);
       hold.stage = 'hold_before_submit';
       return { ok: true, stage: 'hold_before_submit' };
     } finally {
@@ -321,14 +392,38 @@ class AssistantWorker {
   async reportSafely(task, outcome, evidence, error, submitToken) {
     const reportKey = this.store.getLocalTask(task.id)?.report_key || randomId('report', 12);
     this.store.updateLocalTask(task.id, { report_key: reportKey });
-    await this.cloud.reportResult(task.id, task.attempt_id, reportKey, outcome, evidence, error, submitToken);
+    try {
+      await this.cloud.reportResult(task.id, task.attempt_id, reportKey, outcome, evidence, error, submitToken);
+    } catch (reportError) {
+      this.logger.error('结果回传失败，已进入待回传队列，启动时重放', { task_id: task.id, error: reportError.message });
+      this.store.addOutbox({ taskId: task.id, attemptId: task.attempt_id, reportKey, outcome, evidence, error, submitToken });
+    }
     this.store.updateLocalTask(task.id, { status: outcome, progress: outcome === 'submitted' ? 100 : (this.store.getLocalTask(task.id)?.progress || 0), last_error: error || null });
+  }
+
+  async replayOutbox() {
+    for (const item of this.store.listOutbox()) {
+      try {
+        await this.cloud.reportResult(item.taskId, item.attemptId, item.reportKey, item.outcome, item.evidence, item.error, item.submitToken);
+        this.store.removeOutbox(item.id);
+        this.logger.info('待回传结果重放成功', { task_id: item.taskId, outcome: item.outcome });
+      } catch (error) {
+        if (error.statusCode >= 400 && error.statusCode < 500) {
+          this.logger.warn('待回传结果被服务端拒绝，丢弃', { task_id: item.taskId, code: error.code });
+          this.store.removeOutbox(item.id);
+        } else {
+          this.logger.warn('待回传结果重放失败，下次启动再试', { task_id: item.taskId, error: error.message });
+          break;
+        }
+      }
+    }
   }
 
   async cancelTask(taskId) {
     const hold = this.heldTasks.get(taskId);
     if (hold) {
       clearInterval(hold.leaseTimer);
+      clearInterval(hold.watchTimer);
       await this.closeAdapter(hold.adapter);
       this.heldTasks.delete(taskId);
     }
@@ -337,17 +432,62 @@ class AssistantWorker {
   }
 
   async recoverInterruptedTasks() {
-    for (const local of this.store.listLocalTasks()) {
-      if (local.status === 'submitting') {
-        this.logger.warn('发现中断的提交任务，进入结果待核实', { task_id: local.task_id });
-        if (local.attempt_id && local.report_key) {
-          await this.cloud.reportResult(local.task_id, local.attempt_id, local.report_key, 'outcome_unknown', { reason: '客户端在提交阶段中断，不能自动二次提交' }, null, null).catch(() => {});
+    this.busy = true;
+    try {
+      await this.replayOutbox();
+      for (const local of this.store.listLocalTasks()) {
+        if (local.status === 'submitting') {
+          this.logger.warn('发现中断的提交任务，进入结果待核实', { task_id: local.task_id });
+          if (local.attempt_id && local.report_key) {
+            await this.cloud.reportResult(local.task_id, local.attempt_id, local.report_key, 'outcome_unknown', { reason: '客户端在提交阶段中断，不能自动二次提交' }, null, null).catch(() => {});
+          }
+          this.store.updateLocalTask(local.task_id, { status: 'outcome_unknown', last_error: { message: '提交阶段中断，需人工核实' } });
+        } else if (local.submit_intent && local.status === 'ready_to_submit') {
+          this.logger.warn('发现已保存提交意图但未提交的任务，尝试恢复', { task_id: local.task_id });
+          await this.recoverReadyToSubmit(local).catch(error => {
+            this.logger.error('待提交任务恢复失败', { task_id: local.task_id, error: error.message });
+            this.store.updateLocalTask(local.task_id, { last_error: { message: `恢复失败：${error.message}`, code: 'recovery_failed' } });
+          });
         }
-        this.store.updateLocalTask(local.task_id, { status: 'outcome_unknown', last_error: { message: '提交阶段中断，需人工核实' } });
-      } else if (local.submit_intent && local.status === 'ready_to_submit') {
-        this.logger.warn('发现已保存提交意图但未提交的任务', { task_id: local.task_id });
       }
+    } finally {
+      this.busy = false;
     }
+  }
+
+  async recoverReadyToSubmit(local) {
+    const task = { ...local.payload, id: local.task_id, attempt_id: local.attempt_id, status: 'ready_to_submit', progress: 90 };
+    const account = this.store.getAccount(local.account_key);
+    if (!account) throw new Error('本地账号不存在，无法恢复');
+    const adapter = createPlatformAdapter(local.platform, {
+      automationMode: this.config.automationMode,
+      browserName: this.config.browser,
+      account,
+      logger: this.logger
+    });
+    const login = await adapter.checkLoginState();
+    if (login.needsUserAction || !login.loggedIn) {
+      return this.holdTask(task, adapter, 'login_or_verification', login.verification || { type: 'login_required', message: '恢复时平台未登录' });
+    }
+    const identityCheck = await this.verifyIdentity(account, adapter);
+    if (!identityCheck.verified) return this.holdTask(task, adapter, identityCheck.code, { type: 'identity_check', message: identityCheck.message });
+
+    let videoPath = local.local_video_path;
+    if (!videoPath || !fs.existsSync(videoPath)) {
+      videoPath = await this.downloadMaterial({ ...local.payload, id: local.task_id }, { allowExisting: true });
+    }
+    const prepared = await adapter.prepareTask(task);
+    if (prepared.verification) return this.holdTask(task, adapter, 'verification_before_upload', prepared.verification);
+    await adapter.uploadVideo(videoPath);
+    const uploadReady = await adapter.waitForUploadComplete();
+    if (!uploadReady.ready) return this.holdTask(task, adapter, 'upload_incomplete', { type: 'upload_incomplete', message: '恢复后上传未完成' });
+    const fillResult = await adapter.fillFields({ title: task.title, description: task.description, topics: task.topics || [] });
+    const required = adapter.requiredFields || ['description'];
+    const missing = required.filter(field => !fillResult.filled || !fillResult.filled[field]);
+    if (missing.length) return this.holdTask(task, adapter, 'fields_incomplete', { type: 'fields_incomplete', message: `恢复后字段读回失败：${missing.join('、')}` });
+    await this.cloud.saveSubmissionIntent(task.id, task.attempt_id, task.content_version, task.account_id);
+    this.cloud.progress(task.id, task.attempt_id, 'ready_to_submit', 90, '助手重启后已恢复待提交状态', null).catch(() => {});
+    return this.holdTask(task, adapter, 'hold_before_submit', { type: 'submit_hold', message: '助手重启后已恢复，确认后可提交' }, { keepStatus: 'ready_to_submit' });
   }
 }
 

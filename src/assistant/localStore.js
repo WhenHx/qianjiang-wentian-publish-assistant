@@ -39,8 +39,25 @@ class LocalStore {
     this.db = openDatabase(path.join(this.dataDir, 'assistant.db'));
     migrate(this.db, [
       { version: 1, up: db => this.createSchema(db) },
-      { version: 2, up: db => this.migrateSubjectKeys(db) }
+      { version: 2, up: db => this.migrateSubjectKeys(db) },
+      { version: 3, up: db => this.migrateOutbox(db) }
     ]);
+  }
+
+  migrateOutbox(db) {
+    db.exec(`
+CREATE TABLE outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  report_key TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  error_json TEXT,
+  submit_token_protected TEXT,
+  created_at TEXT NOT NULL
+);
+`);
   }
 
   createSchema(db) {
@@ -106,6 +123,28 @@ ALTER TABLE local_tasks ADD COLUMN subject_key TEXT;
   }
 
   transact(fn) { return immediateTransaction(this.db, fn); }
+
+  addOutbox({ taskId, attemptId, reportKey, outcome, evidence, error, submitToken }) {
+    this.db.prepare(`INSERT INTO outbox (task_id,attempt_id,report_key,outcome,evidence_json,error_json,submit_token_protected,created_at)
+      VALUES (?,?,?,?,?,?,?,?)`)
+      .run(taskId, attemptId, reportKey, outcome, json(evidence || {}), error ? json(error) : null, submitToken ? this.secretProtector.protect(submitToken) : null, nowIso());
+  }
+
+  listOutbox() {
+    return this.db.prepare('SELECT * FROM outbox ORDER BY id ASC').all().map(row => ({
+      id: row.id,
+      taskId: row.task_id,
+      attemptId: row.attempt_id,
+      reportKey: row.report_key,
+      outcome: row.outcome,
+      evidence: parseJson(row.evidence_json, {}),
+      error: parseJson(row.error_json, null),
+      submitToken: row.submit_token_protected ? this.secretProtector.unprotect(row.submit_token_protected) : null,
+      createdAt: row.created_at
+    }));
+  }
+
+  removeOutbox(id) { this.db.prepare('DELETE FROM outbox WHERE id=?').run(id); }
   getSetting(key, fallback = null) {
     const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key);
     return row ? row.value : fallback;
