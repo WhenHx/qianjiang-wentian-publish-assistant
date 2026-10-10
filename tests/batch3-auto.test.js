@@ -6,9 +6,9 @@ const path = require('node:path');
 const { AssistantWorker } = require('../src/assistant/worker');
 const { ConfigurableCdpAdapter } = require('../src/assistant/platforms/configurableCdpAdapter');
 
-function adapterWithBrowser(browser) {
-  const account = { account_key: 'localacct_t1', platform: 'douyin', nickname: '测试', platform_identity: 'identity-A', profile_dir: 'x' };
-  const adapter = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+function adapterWithBrowser(browser, platform = 'douyin') {
+  const account = { account_key: 'localacct_t1', platform, nickname: '测试', platform_identity: 'identity-A', profile_dir: 'x' };
+  const adapter = new ConfigurableCdpAdapter({ platform, account, browserName: 'edge', logger: null });
   adapter.browser = browser;
   return adapter;
 }
@@ -30,11 +30,11 @@ test('F05：上传未完成或失败时不进入待提交', async () => {
   assert.equal(failResult.ready, false);
   assert.equal(failResult.failure, '上传失败');
 
-  // 一直忙碌 → 超时
+  // 一直忙碌 → 超时（用视频号配置：保留默认忙碌特征）
   const busy = adapterWithBrowser({
     bodyText: async () => '上传中 45%',
-    evaluate: async () => true
-  });
+    evaluate: async () => false
+  }, 'shipinhao');
   const busyResult = await busy.waitForUploadComplete({ timeoutMs: 300, pollMs: 50 });
   assert.equal(busyResult.ready, false);
 });

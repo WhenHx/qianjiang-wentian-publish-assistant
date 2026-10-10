@@ -45,6 +45,7 @@ class CloudClient {
   syncAccounts(accounts) { return this.request('/api/v1/accounts/sync', { method: 'POST', body: { accounts } }); }
   claimTask() { return this.request('/api/v1/tasks/claim', { method: 'POST', body: {} }); }
   pollCommands() { return this.request('/api/v1/devices/commands'); }
+  getTask(taskId) { return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}`); }
   ackCommand(commandId, ok, result) { return this.request(`/api/v1/commands/${encodeURIComponent(commandId)}/ack`, { method: 'POST', body: { ok, result } }); }
   refreshMaterialDownload(taskId, attemptId) { return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/material-download`, { method: 'POST', body: { attempt_id: attemptId } }); }
   renewLease(taskId, attemptId, manualHold = false) { return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/lease`, { method: 'POST', body: { attempt_id: attemptId, manual_hold: manualHold } }); }

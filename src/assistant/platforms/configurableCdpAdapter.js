@@ -209,6 +209,15 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
   async submitOnce() {
     const browser = await this.ensureBrowser();
     this.lastSubmitUrl = await browser.currentUrl().catch(() => '');
+    const dismissible = ['我知道了', '知道了', '跳过', '以后再说'];
+    await browser.evaluate(browser.frameWrap(`(() => {
+      for (const text of ${JSON.stringify(dismissible)}) {
+        const el = [...document.querySelectorAll('button,[role=button],div[class*=button],div[class*=btn]')].find(item => (item.innerText || '').trim() === text);
+        if (el) el.click();
+      }
+      return true;
+    })()`, this.frame)).catch(() => {});
+    await sleep(500);
     const candidates = String(this.selectors.submitButton || '').split(',').map(item => item.trim()).filter(Boolean);
     for (const candidate of candidates) {
       const hasText = candidate.match(/^button:has-text\(['"](.+)['"]\)$/);
@@ -217,7 +226,13 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
         if (hasText) {
           clicked = await browser.evaluate(browser.frameWrap(`(() => {
             const target = ${JSON.stringify(hasText[1])};
-            const el = [...document.querySelectorAll('button,[role=button],div[class*=button],div[class*=btn],a[role=button]')].find(item => (item.innerText || '').trim() === target && !item.disabled && !String(item.className || '').includes('disabled'));
+            const match = item => (item.innerText || '').trim() === target && !item.disabled && !String(item.className || '').includes('disabled');
+            let el = [...document.querySelectorAll('button,[role=button]')].find(match);
+            if (!el) el = [...document.querySelectorAll('div[class*=button],div[class*=btn],a[role=button]')].find(match);
+            if (el) {
+              const innerButton = [...el.querySelectorAll('button')].find(match);
+              if (innerButton) el = innerButton;
+            }
             if (!el) return false;
             el.scrollIntoView({ block: 'center' });
             el.click();
@@ -237,9 +252,41 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
       } catch {
         clicked = false;
       }
-      if (clicked) return { clicked: true, selector: candidate, clicked_at: new Date().toISOString() };
+      if (clicked) {
+        await this.handlePostSubmitDialogs();
+        return { clicked: true, selector: candidate, clicked_at: new Date().toISOString() };
+      }
     }
     throw new Error(`未找到可点击的最终提交按钮（已按配置选择器逐一尝试：${candidates.join(' | ') || '无配置'}）`);
+  }
+
+  async handlePostSubmitDialogs() {
+    const actions = this.selectors.postSubmitDialogActions || [];
+    if (!actions.length) return;
+    const browser = await this.ensureBrowser();
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      await sleep(800);
+      for (const action of actions) {
+        const handled = await browser.evaluate(browser.frameWrap(`(() => {
+          const els = [...document.querySelectorAll('button,[role=button],div[class*=button],div[class*=btn]')];
+          const dialog = document.body.innerText.includes(${JSON.stringify(action.text)});
+          if (!dialog) return 'absent';
+          const btn = els.find(item => (item.innerText || '').trim() === ${JSON.stringify(action.click)});
+          if (!btn) return 'no-button';
+          btn.click();
+          return 'clicked';
+        })()`, this.frame)).catch(() => 'error');
+        if (handled === 'clicked') {
+          this.context.logger?.info('提交后弹窗已处理', { dialog: action.text, clicked: action.click });
+          await sleep(800);
+        } else if (handled === 'no-button') {
+          this.context.logger?.warn('提交后弹窗出现但未找到处理按钮', { dialog: action.text, expected: action.click });
+        }
+      }
+      const anyPresent = await browser.evaluate(browser.frameWrap(`(() => ${JSON.stringify(actions.map(a => a.text))}.some(t => document.body.innerText.includes(t)))()`, this.frame)).catch(() => false);
+      if (!anyPresent) return;
+    }
   }
 
   async evidenceExtra() {

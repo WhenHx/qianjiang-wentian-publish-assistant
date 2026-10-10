@@ -320,9 +320,13 @@ class AssistantWorker {
         try {
           await this.continueTask(task.id, { fromWatch: true });
         } catch (error) {
+          if (error.code === 'task_terminal' || error.code === 'not_found' || /task_terminal|not_found/.test(error.message)) {
+            this.dropHeldTask(task.id, '云端任务已终止，放弃本地接管');
+            return;
+          }
           this.logger.warn('自动恢复失败，等待下次检测', { task_id: task.id, error: error.message });
         } finally {
-          hold.resuming = false;
+          if (this.heldTasks.has(task.id)) hold.resuming = false;
         }
       } catch (error) {
         strikes += 1;
@@ -341,6 +345,16 @@ class AssistantWorker {
     this.heldTasks.delete(taskId);
     await this.reportSafely(hold.task, 'failed', {}, { message, code }, null);
     this.store.updateLocalTask(taskId, { status: 'failed', last_error: { message, code } });
+  }
+
+  async dropHeldTask(taskId, message) {
+    const hold = this.heldTasks.get(taskId);
+    if (!hold) return;
+    clearInterval(hold.leaseTimer);
+    clearInterval(hold.watchTimer);
+    await this.closeAdapter(hold.adapter);
+    this.heldTasks.delete(taskId);
+    this.store.updateLocalTask(taskId, { status: 'cancelled', last_error: { message, code: 'cloud_terminal' } });
   }
 
   async continueTask(taskId, { fromWatch = false } = {}) {
@@ -362,7 +376,7 @@ class AssistantWorker {
       const local = this.store.getLocalTask(task.id);
       const videoPath = local?.local_video_path;
       if (!videoPath || !fs.existsSync(videoPath)) throw new Error('本地素材缓存不存在，无法从原阶段恢复');
-      if (stage === 'login_or_verification' || stage === 'verification_before_upload') {
+      if (stage === 'login_or_verification' || stage === 'verification_before_upload' || stage === 'upload_incomplete') {
         const prepared = await adapter.prepareTask(task);
         if (prepared.verification) throw new Error(prepared.verification.message || '仍存在平台验证');
         await this.progress(task, 'uploading', 50, '人工处理完成，从上传视频阶段恢复');
@@ -370,7 +384,7 @@ class AssistantWorker {
         const uploadReady = await adapter.waitForUploadComplete();
         if (!uploadReady.ready) throw new Error(`恢复后上传未完成：${uploadReady.failure || uploadReady.message || ''}`);
       }
-      if (stage === 'login_or_verification' || stage === 'verification_before_upload' || stage === 'verification_after_upload') {
+      if (stage === 'login_or_verification' || stage === 'verification_before_upload' || stage === 'verification_after_upload' || stage === 'upload_incomplete' || stage === 'fields_incomplete') {
         await this.progress(task, 'uploading', 70, '人工处理完成，从填写字段阶段恢复');
         const fillResult = await adapter.fillFields({ title: task.title, description: task.description, topics: task.topics || [] });
         const required = adapter.requiredFields || ['description'];
@@ -381,8 +395,12 @@ class AssistantWorker {
       if (verificationAfterResume) throw new Error(verificationAfterResume.message || '仍存在平台验证');
       await this.progress(task, 'ready_to_submit', 90, '人工处理完成，重新检查通过，等待最终提交');
       await this.cloud.saveSubmissionIntent(task.id, task.attempt_id, task.content_version, task.account_id);
+      this.store.updateLocalTask(task.id, { submit_intent: { saved_at: new Date().toISOString(), content_version: task.content_version, account_id: task.account_id } });
       clearInterval(hold.watchTimer);
       hold.stage = 'hold_before_submit';
+      if ((this.config.submitMode || 'hold_before_submit') !== 'hold_before_submit') {
+        return await this.submitHeldTask(taskId);
+      }
       return { ok: true, stage: 'hold_before_submit' };
     } finally {
       this.busy = false;
@@ -502,8 +520,8 @@ class AssistantWorker {
             await this.cloud.reportResult(local.task_id, local.attempt_id, local.report_key, 'outcome_unknown', { reason: '客户端在提交阶段中断，不能自动二次提交' }, null, null).catch(() => {});
           }
           this.store.updateLocalTask(local.task_id, { status: 'outcome_unknown', last_error: { message: '提交阶段中断，需人工核实' } });
-        } else if (local.submit_intent && local.status === 'ready_to_submit') {
-          this.logger.warn('发现已保存提交意图但未提交的任务，尝试恢复', { task_id: local.task_id });
+        } else if (local.status === 'ready_to_submit') {
+          this.logger.warn('发现待提交任务，查询云端状态并尝试恢复', { task_id: local.task_id });
           await this.recoverReadyToSubmit(local).catch(error => {
             this.logger.error('待提交任务恢复失败', { task_id: local.task_id, error: error.message });
             this.store.updateLocalTask(local.task_id, { last_error: { message: `恢复失败：${error.message}`, code: 'recovery_failed' } });
@@ -516,6 +534,18 @@ class AssistantWorker {
   }
 
   async recoverReadyToSubmit(local) {
+    try {
+      const cloudTask = await this.cloud.getTask(local.task_id);
+      const cloudStatus = cloudTask?.task?.status;
+      if (cloudStatus && ['cancelled', 'submitted', 'failed', 'outcome_unknown'].includes(cloudStatus)) {
+        this.store.updateLocalTask(local.task_id, { status: cloudStatus === 'cancelled' ? 'cancelled' : cloudStatus, last_error: { message: '云端任务已终态，无需恢复', code: 'cloud_terminal' } });
+        this.logger.info('待提交任务云端已终态，跳过恢复', { task_id: local.task_id, cloud_status: cloudStatus });
+        return;
+      }
+    } catch {
+      this.logger.warn('云端任务状态查询失败，暂停恢复该任务', { task_id: local.task_id });
+      return;
+    }
     const task = { ...local.payload, id: local.task_id, attempt_id: local.attempt_id, status: 'ready_to_submit', progress: 90 };
     const account = this.store.getAccount(local.account_key);
     if (!account) throw new Error('本地账号不存在，无法恢复');
@@ -547,6 +577,10 @@ class AssistantWorker {
     if (missing.length) return this.holdTask(task, adapter, 'fields_incomplete', { type: 'fields_incomplete', message: `恢复后字段读回失败：${missing.join('、')}` });
     await this.cloud.saveSubmissionIntent(task.id, task.attempt_id, task.content_version, task.account_id);
     this.cloud.progress(task.id, task.attempt_id, 'ready_to_submit', 90, '助手重启后已恢复待提交状态', null).catch(() => {});
+    if ((this.config.submitMode || 'hold_before_submit') !== 'hold_before_submit') {
+      this.logger.info('重启恢复后按自动模式直接提交', { task_id: task.id });
+      return await this.executeSubmit(task, adapter);
+    }
     return this.holdTask(task, adapter, 'hold_before_submit', { type: 'submit_hold', message: '助手重启后已恢复，确认后可提交' }, { keepStatus: 'ready_to_submit' });
   }
 }

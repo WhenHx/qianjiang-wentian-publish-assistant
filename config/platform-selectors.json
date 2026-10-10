@@ -44,7 +44,11 @@
     ],
     "requiredFields": [
       "description"
-    ]
+    ],
+    "uploadReadyPatterns": [
+      "预览视频"
+    ],
+    "uploadBusyPatterns": []
   },
   "shipinhao": {
     "loginUrl": "https://channels.weixin.qq.com/platform",
@@ -90,6 +94,12 @@
     ],
     "requiredFields": [
       "description"
+    ],
+    "postSubmitDialogActions": [
+      {
+        "text": "将此次编辑保留",
+        "click": "不保存"
+      }
     ]
   },
   "kuaishou": {
