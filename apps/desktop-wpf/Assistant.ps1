@@ -1,4 +1,4 @@
-param([string]$Config = 'config\assistant.development.json')
+﻿param([string]$Config = 'config\assistant.development.json')
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
