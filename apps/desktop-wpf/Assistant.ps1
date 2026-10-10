@@ -111,7 +111,11 @@ function Invoke-LocalApi([string]$Path, [string]$Method = 'GET', $Body = $null) 
             <Button Name="ClearCache" Content="清理下载缓存" Width="120" Margin="0,0,8,0"/>
             <Button Name="ExportLogs" Content="导出脱敏日志" Width="120"/>
           </StackPanel>
-          <TextBlock Margin="0,12,0,0" Text="可选开机启动：首版默认关闭，本测试版未写入启动项。" TextWrapping="Wrap"/>
+          <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+            <Button Name="EnableAutostart" Content="启用开机自启动" Width="130" Margin="0,0,8,0"/>
+            <Button Name="DisableAutostart" Content="关闭开机自启动" Width="130"/>
+          </StackPanel>
+          <TextBlock Margin="0,12,0,0" Text="开机自启动写入当前用户的 HKCU Run 注册表项，登录后自动启动助手（托盘常驻）。" TextWrapping="Wrap"/>
         </StackPanel>
       </TabItem>
     </TabControl>
@@ -134,7 +138,8 @@ function Refresh-Status {
   try {
     $status = Invoke-LocalApi '/local/v1/status'
     $controls.StatusText.Text = JsonText $status
-    $controls.ModeBanner.Text = if ($status.simulation) { '模拟模式：仅用于本地联调，不代表真实发布成功' } else { '生产模式：请确认服务地址和账号授权' }
+    $submitLabel = if ($status.submit_mode -eq 'auto') { '正式模式：网页确认后自动提交' } else { '测试模式：停在提交前需手动确认' }
+    $controls.ModeBanner.Text = (if ($status.simulation) { '模拟模式：仅用于本地联调，不代表真实发布成功' } else { '生产模式：请确认服务地址和账号授权' }) + ' ｜ ' + $submitLabel
     Set-Footer '状态已刷新'
   } catch { Show-Error $_ }
 }
@@ -190,6 +195,19 @@ $controls.ContinueTask.Add_Click({ try { [System.Windows.MessageBox]::Show((Json
 $controls.SubmitTask.Add_Click({ try { [System.Windows.MessageBox]::Show((JsonText (Invoke-LocalApi "/local/v1/tasks/$($controls.TaskId.Text)/submit" 'POST' @{})), '单次提交结果') | Out-Null; Refresh-Tasks } catch { Show-Error $_ } })
 $controls.CancelLocalTask.Add_Click({ try { Invoke-LocalApi "/local/v1/tasks/$($controls.TaskId.Text)/cancel-local" 'POST' @{} | Out-Null; Refresh-Tasks } catch { Show-Error $_ } })
 $controls.RefreshSettings.Add_Click({ Refresh-Settings })
+$controls.EnableAutostart.Add_Click({
+  try {
+    $cmd = "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Config `"$ConfigRelPath`""
+    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'QianjiangWentianAssistant' -Value $cmd
+    Set-Footer '已启用开机自启动（当前用户）'
+  } catch { Show-Error $_ }
+})
+$controls.DisableAutostart.Add_Click({
+  try {
+    Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'QianjiangWentianAssistant' -ErrorAction SilentlyContinue
+    Set-Footer '已关闭开机自启动'
+  } catch { Show-Error $_ }
+})
 $controls.ClearCache.Add_Click({ try { Invoke-LocalApi '/local/v1/cache/clear' 'POST' @{} | Out-Null; Set-Footer '缓存已清理' } catch { Show-Error $_ } })
 $controls.ExportLogs.Add_Click({
   try {
@@ -205,8 +223,28 @@ $Tray.Icon = [System.Drawing.SystemIcons]::Application
 $Tray.Text = '千匠问天发布助手'
 $Tray.Visible = $true
 $Menu = New-Object System.Windows.Forms.ContextMenuStrip
-$Menu.Items.Add('打开').Add_Click({ $Window.Show(); $Window.WindowState = 'Normal'; $Window.Activate() })
-$Menu.Items.Add('退出').Add_Click({ $Window.Tag = 'Exit'; $Window.Close() })
+$Menu.Items.Add('查看状态').Add_Click({ $Window.Show(); $Window.WindowState = 'Normal'; $Window.Activate() })
+$Menu.Items.Add('暂停领取新任务').Add_Click({
+  try { Invoke-LocalApi '/local/v1/worker/pause' 'POST' @{} | Out-Null; $Tray.ShowBalloonTip(2000, '千匠问天发布助手', '已暂停领取新任务；进行中的任务不受影响。', 'Info') } catch { Show-Error $_ }
+})
+$Menu.Items.Add('恢复领取新任务').Add_Click({
+  try { Invoke-LocalApi '/local/v1/worker/resume' 'POST' @{} | Out-Null; $Tray.ShowBalloonTip(2000, '千匠问天发布助手', '已恢复领取新任务。', 'Info') } catch { Show-Error $_ }
+})
+$Menu.Items.Add('退出').Add_Click({
+  try {
+    $st = Invoke-LocalApi '/local/v1/status'
+    $busy = $st.worker.busy -or ($st.worker.held_tasks.Count -gt 0)
+    if ($busy) {
+      $answer = [System.Windows.MessageBox]::Show("当前有任务正在执行或等待处理：$([string]::Join('、', $st.worker.held_tasks))`n退出不会中断已在平台提交的流程，不明结果会保留为待核实。确认退出？", '退出确认', 'YesNo', 'Warning')
+      if ($answer -ne 'Yes') { return }
+    }
+  } catch {}
+  $Window.Tag = 'Exit'
+  $Window.Close()
+  $Tray.Visible = $false
+  $Tray.Dispose()
+  [System.Windows.Application]::Current.Shutdown()
+})
 $Tray.ContextMenuStrip = $Menu
 $Tray.Add_DoubleClick({ $Window.Show(); $Window.WindowState = 'Normal'; $Window.Activate() })
 $Window.Add_Closing({ param($sender,$e) if ($Window.Tag -ne 'Exit') { $e.Cancel = $true; $Window.Hide(); $Tray.ShowBalloonTip(2000, '千匠问天发布助手', '窗口已最小化到托盘，助手仍在运行。', 'Info') } })
@@ -218,4 +256,7 @@ $Timer.Add_Tick({ Refresh-Status; Refresh-Tasks })
 $Timer.Start()
 
 Refresh-Status; Refresh-Accounts; Refresh-Tasks; Refresh-Settings
-$Window.ShowDialog() | Out-Null
+$Tray.ShowBalloonTip(3000, '千匠问天发布助手', '助手已在后台运行，双击托盘图标查看状态。', 'Info')
+$app = New-Object System.Windows.Application
+$app.ShutdownMode = 'OnExplicitShutdown'
+$app.Run() | Out-Null

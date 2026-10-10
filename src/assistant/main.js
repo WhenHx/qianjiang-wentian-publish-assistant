@@ -65,7 +65,34 @@ class AssistantApp {
     this.server = http.createServer((req, res) => this.handle(req, res));
   }
 
+  acquireInstanceLock() {
+    const lockPath = path.join(this.config.dataDir, 'assistant.lock');
+    if (fs.existsSync(lockPath)) {
+      try {
+        const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        if (lock.pid && lock.pid !== process.pid) {
+          try {
+            process.kill(lock.pid, 0);
+            throw new Error(`同一数据目录已有助手实例在运行（PID ${lock.pid}），禁止多实例并发执行`);
+          } catch (error) {
+            if (error.code !== 'ESRCH') throw error;
+          }
+        }
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          fs.rmSync(lockPath, { force: true });
+        } else {
+          throw error;
+        }
+      }
+    }
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }), { encoding: 'utf8', mode: 0o600 });
+    this.lockPath = lockPath;
+    process.on('exit', () => { try { fs.rmSync(lockPath, { force: true }); } catch {} });
+  }
+
   async start() {
+    this.acquireInstanceLock();
     const port = this.config.localApiPort ?? 8781;
     const host = this.config.localApiHost ?? '127.0.0.1';
     await new Promise(resolve => this.server.listen(port, host, resolve));
@@ -87,6 +114,7 @@ class AssistantApp {
     clearInterval(this.heartbeatTimer);
     this.worker.stop();
     this.server.close();
+    if (this.lockPath) { try { fs.rmSync(this.lockPath, { force: true }); } catch {} }
   }
 
   startHeartbeat() {
@@ -178,6 +206,7 @@ class AssistantApp {
           version: VERSION,
           mode: this.config.mode,
           simulation: this.config.mode === 'simulation',
+          submit_mode: this.config.submitMode || 'hold_before_submit',
           service_url: this.config.serviceUrl,
           bound: Boolean(binding),
           device_id: binding?.deviceId,
@@ -285,6 +314,16 @@ class AssistantApp {
       if (match && req.method === 'POST') {
         this.requireLocalTask(decodeURIComponent(match[1]));
         return sendJson(res, 200, await this.worker.cancelTask(decodeURIComponent(match[1])));
+      }
+
+      if (pathname === '/local/v1/worker/pause' && req.method === 'POST') {
+        this.worker.paused = true;
+        return sendJson(res, 200, { ok: true, paused: true });
+      }
+
+      if (pathname === '/local/v1/worker/resume' && req.method === 'POST') {
+        this.worker.paused = false;
+        return sendJson(res, 200, { ok: true, paused: false });
       }
 
       if (pathname === '/local/v1/settings' && req.method === 'GET') {
