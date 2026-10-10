@@ -220,6 +220,29 @@ class ManagedBrowser {
     await this.evaluate(this.frameWrap(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })()`, frame));
   }
 
+  async clickReal(selector, frame = null, at = null) {
+    await this.waitForSelector(selector, 10000, frame);
+    await this.evaluate(this.frameWrap(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (el) el.scrollIntoView({ block: 'end', behavior: 'instant' });
+      return true;
+    })()`, frame));
+    await sleep(600);
+    const rect = await this.evaluate(this.frameWrap(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    })()`, frame));
+    if (!rect) throw new Error(`未找到可点击元素：${selector}`);
+    const [rx, ry] = Array.isArray(at) && at.length === 2 ? at : [0.5, 0.5];
+    const x = rect.x + rect.width * rx;
+    const y = rect.y + rect.height * ry;
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await this.page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+    }
+  }
+
   async setValue(selector, value, frame = null) {
     await this.waitForSelector(selector, 10000, frame);
     return this.evaluate(this.frameWrap(`(() => {

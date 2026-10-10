@@ -45,7 +45,15 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     const deadline = Date.now() + timeoutMs;
     do {
       for (const selector of selectors) {
-        const text = await browser.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`).catch(() => '');
+        let text = '';
+        if (selector.startsWith('text:')) {
+          const body = await browser.bodyText();
+          const needle = selector.slice(5);
+          const line = body.split(/\r?\n/).map(l => l.trim()).find(l => l.includes(needle));
+          text = line || '';
+        } else {
+          text = await browser.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`).catch(() => '');
+        }
         if (text) { identity = text.slice(0, 80); break; }
       }
       if (!identity) await sleep(pollMs);
@@ -169,7 +177,7 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
       if (hasText) {
         clicked = await browser.evaluate(browser.frameWrap(`(() => {
           const target = ${JSON.stringify(hasText[1])};
-          const el = [...document.querySelectorAll('button,[role=button]')].find(item => (item.innerText || '').trim() === target && !item.disabled);
+          const el = [...document.querySelectorAll('button,[role=button],div[class*=button],div[class*=btn],a[role=button]')].find(item => (item.innerText || '').trim() === target && !item.disabled && !String(item.className || '').includes('disabled'));
           if (!el) return false;
           el.scrollIntoView({ block: 'center' });
           el.click();
@@ -178,11 +186,15 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
       } else {
         clicked = await browser.evaluate(browser.frameWrap(`(() => {
           const el = document.querySelector(${JSON.stringify(candidate)});
-          if (!el || el.disabled) return false;
-          el.scrollIntoView({ block: 'center' });
-          el.click();
-          return true;
+          if (!el || el.disabled || String(el.className || '').includes('disabled') || el.getAttribute('submit-disabled') === 'true') return 'not-found';
+          return 'found';
         })()`, this.frame));
+        if (clicked === 'found') {
+          await browser.clickReal(candidate, this.frame, this.selectors.submitClickAt);
+          clicked = true;
+        } else {
+          clicked = false;
+        }
       }
       if (clicked) return { clicked: true, selector: candidate, clicked_at: new Date().toISOString() };
     }
