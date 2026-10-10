@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { openDatabase, migrate } = require('../common/sqlite');
+const { openDatabase, migrate, immediateTransaction } = require('../common/sqlite');
 const { randomId, assertSafeId, sha256Buffer } = require('../common/ids');
 const { nowIso } = require('../common/time');
 const { protectText, unprotectText } = require('../common/dpapi');
@@ -17,13 +17,16 @@ function subjectKeyFor(serviceUrl, userId) {
   let normalized = String(serviceUrl || '').trim();
   try {
     const url = new URL(normalized);
-    const isDefaultPort = (url.protocol === 'https:' && (url.port === '' || url.port === '443'))
-      || (url.protocol === 'http:' && (url.port === '' || url.port === '80'));
-    normalized = `${url.protocol}//${url.hostname.toLowerCase()}${isDefaultPort ? '' : `:${url.port}`}${url.pathname.replace(/\/+$/, '')}`;
+    normalized = `${url.protocol}//${url.hostname.toLowerCase()}${url.port === '' ? '' : `:${url.port}`}${url.pathname.replace(/\/+$/, '')}`;
   } catch {
     normalized = normalized.toLowerCase().replace(/\/+$/, '');
   }
   return sha256Buffer(Buffer.from(`${normalized}|${userId}`)).slice(0, 24);
+}
+
+function legacySubjectKeyFor(serviceUrl, userId) {
+  if (!userId) return null;
+  return sha256Buffer(Buffer.from(`${serviceUrl}|${userId}`)).slice(0, 24);
 }
 
 class LocalStore {
@@ -101,6 +104,8 @@ ALTER TABLE local_tasks ADD COLUMN subject_key TEXT;
   setSetting(key, value) {
     this.db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value));
   }
+
+  transact(fn) { return immediateTransaction(this.db, fn); }
   getSetting(key, fallback = null) {
     const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key);
     return row ? row.value : fallback;
@@ -257,4 +262,4 @@ ALTER TABLE local_tasks ADD COLUMN subject_key TEXT;
   }
 }
 
-module.exports = { LocalStore, subjectKeyFor };
+module.exports = { LocalStore, subjectKeyFor, legacySubjectKeyFor };

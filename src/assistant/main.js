@@ -2,7 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { LocalStore, subjectKeyFor } = require('./localStore');
+const { LocalStore, subjectKeyFor, legacySubjectKeyFor } = require('./localStore');
 const { CloudClient } = require('./cloudClient');
 const { AssistantWorker } = require('./worker');
 const { Logger, redact } = require('../common/log');
@@ -10,7 +10,6 @@ const { readJsonBody, sendJson, sendError } = require('../common/json');
 const { unauthorized, notFound, badRequest, forbidden, conflict } = require('../common/errors');
 const { requireString, requirePlatform } = require('../common/validation');
 const { randomId } = require('../common/ids');
-const { immediateTransaction } = require('../common/sqlite');
 const { isAvailable: dpapiAvailable } = require('../common/dpapi');
 const { createPlatformAdapter, capabilities } = require('./platforms');
 
@@ -112,12 +111,18 @@ class AssistantApp {
     if (!binding) return true;
     const expected = subjectKeyFor(this.config.serviceUrl, userId);
     if (!binding.subjectKey) {
-      const adopted = immediateTransaction(this.store.db, () => {
+      const adopted = this.store.transact(() => {
         this.store.setBindingSubject(expected);
         return this.store.adoptSubjectForLegacyRows(expected);
       });
       this.logger.info('已回填绑定业务主体', { subject_key: expected, adopted_accounts: adopted.accounts, adopted_tasks: adopted.tasks });
     } else if (binding.subjectKey !== expected) {
+      const legacyKey = legacySubjectKeyFor(this.config.serviceUrl, userId);
+      if (legacyKey && binding.subjectKey === legacyKey) {
+        this.store.setBindingSubject(expected);
+        this.logger.info('主体键已迁移到规范化 URL 形式', { subject_key: expected });
+        return true;
+      }
       if (!this.subjectMismatch) {
         this.subjectMismatch = true;
         this.logger.error('云端业务主体与本地绑定主体不一致，已停止任务执行；请解绑后重新绑定', { expected, actual: binding.subjectKey });

@@ -53,6 +53,9 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
           text = line || '';
         } else {
           text = await browser.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`).catch(() => '');
+          if (!text && this.frame) {
+            text = await browser.evaluate(browser.frameWrap(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.textContent || '').trim() : ''; })()`, this.frame)).catch(() => '');
+          }
         }
         if (text) { identity = text.slice(0, 80); break; }
       }
@@ -74,15 +77,16 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
       .filter(c => /session|sid|uid|passport|token/i.test(c.name))
       .map(c => `${c.name}=${c.value}`)
       .sort();
+    if (relevant.length === 0) return null;
     return crypto.createHash('sha256').update(relevant.join(';')).digest('hex');
   }
 
   async recheckIdentity() {
     const direct = await this.checkIdentity();
     if (direct.identity) return { ...direct, direct: true };
-    if (this.verifiedSession && this.browser) {
+    if (this.verifiedSession && this.verifiedSession.marker && this.browser) {
       const marker = await this.sessionMarker();
-      if (marker === this.verifiedSession.marker) {
+      if (marker && marker === this.verifiedSession.marker) {
         return { platform: this.context.platform, identity: this.verifiedSession.identity, direct: false, via: 'session_marker', url: await this.browser.currentUrl().catch(() => '') };
       }
     }
@@ -97,11 +101,18 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     return this.checkLoginStateInternal({ navigateToLogin: false });
   }
 
+  async pageText(browser) {
+    const main = await browser.bodyText();
+    if (!this.frame) return main;
+    const inner = await browser.bodyText(this.frame);
+    return `${main}\n${inner}`;
+  }
+
   async waitForContent({ timeoutMs = 10000, pollMs = 500 } = {}) {
     const deadline = Date.now() + timeoutMs;
     let text = '';
     while (Date.now() < deadline) {
-      text = await this.browser.bodyText();
+      text = await this.pageText(this.browser);
       const indicator = (this.selectors.loggedInIndicators || []).find(item => text.includes(item));
       if (indicator) return { text, indicator };
       if ((this.selectors.verificationPatterns || []).find(item => text.includes(item))) return { text, indicator: null };
@@ -115,7 +126,7 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
       return { loggedIn: false, readOnly: true, reason: 'browser_not_started', checked_at: new Date().toISOString() };
     }
     const browser = await this.ensureBrowser(navigateToLogin ? this.selectors.loginUrl : undefined);
-    const { text, indicator } = await this.waitForContent();
+    const { indicator } = await this.waitForContent();
     const verification = await this.detectVerification();
     if (verification) return { loggedIn: false, needsUserAction: true, verification };
     const state = await browser.saveCookies();
@@ -159,7 +170,7 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
 
   async detectVerification() {
     const browser = await this.ensureBrowser();
-    const text = await browser.bodyText();
+    const text = await this.pageText(browser);
     const pattern = (this.selectors.verificationPatterns || []).find(item => text.includes(item));
     if (pattern) {
       return { type: 'platform_verification', pattern, message: `页面出现可能的验证/登录提示：${pattern}` };
@@ -173,28 +184,30 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     const candidates = String(this.selectors.submitButton || '').split(',').map(item => item.trim()).filter(Boolean);
     for (const candidate of candidates) {
       const hasText = candidate.match(/^button:has-text\(['"](.+)['"]\)$/);
-      let clicked;
-      if (hasText) {
-        clicked = await browser.evaluate(browser.frameWrap(`(() => {
-          const target = ${JSON.stringify(hasText[1])};
-          const el = [...document.querySelectorAll('button,[role=button],div[class*=button],div[class*=btn],a[role=button]')].find(item => (item.innerText || '').trim() === target && !item.disabled && !String(item.className || '').includes('disabled'));
-          if (!el) return false;
-          el.scrollIntoView({ block: 'center' });
-          el.click();
-          return true;
-        })()`, this.frame));
-      } else {
-        clicked = await browser.evaluate(browser.frameWrap(`(() => {
-          const el = document.querySelector(${JSON.stringify(candidate)});
-          if (!el || el.disabled || String(el.className || '').includes('disabled') || el.getAttribute('submit-disabled') === 'true') return 'not-found';
-          return 'found';
-        })()`, this.frame));
-        if (clicked === 'found') {
-          await browser.clickReal(candidate, this.frame, this.selectors.submitClickAt);
-          clicked = true;
+      let clicked = false;
+      try {
+        if (hasText) {
+          clicked = await browser.evaluate(browser.frameWrap(`(() => {
+            const target = ${JSON.stringify(hasText[1])};
+            const el = [...document.querySelectorAll('button,[role=button],div[class*=button],div[class*=btn],a[role=button]')].find(item => (item.innerText || '').trim() === target && !item.disabled && !String(item.className || '').includes('disabled'));
+            if (!el) return false;
+            el.scrollIntoView({ block: 'center' });
+            el.click();
+            return true;
+          })()`, this.frame));
         } else {
-          clicked = false;
+          const found = await browser.evaluate(browser.frameWrap(`(() => {
+            const el = document.querySelector(${JSON.stringify(candidate)});
+            if (!el || el.disabled || String(el.className || '').includes('disabled') || el.getAttribute('submit-disabled') === 'true') return false;
+            return true;
+          })()`, this.frame));
+          if (found) {
+            await browser.clickReal(candidate, this.frame, this.selectors.submitClickAt);
+            clicked = true;
+          }
         }
+      } catch {
+        clicked = false;
       }
       if (clicked) return { clicked: true, selector: candidate, clicked_at: new Date().toISOString() };
     }
@@ -214,12 +227,13 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const url = await browser.currentUrl().catch(() => '');
-      const text = await browser.bodyText();
+      const text = await this.pageText(browser);
       const failure = (this.selectors.failurePatterns || []).find(item => text.includes(item));
       if (failure) return { outcome: 'failed', evidence: { failure_pattern: failure, url, ...(await this.evidenceExtra()) } };
       const success = (this.selectors.successPatterns || []).find(item => text.includes(item));
       if (success) return { outcome: 'submitted', evidence: { success_pattern: success, platform_status: 'accepted_or_reviewing', url, ...(await this.evidenceExtra()) } };
-      if (url && startUrl && url !== startUrl && successUrls.some(pattern => url.includes(pattern))) {
+      const redirected = url && successUrls.some(pattern => url.includes(pattern)) && (!startUrl || url !== startUrl);
+      if (redirected) {
         return { outcome: 'submitted', evidence: { redirect: url, platform_status: 'redirected_to_manage', ...(await this.evidenceExtra()) } };
       }
       await sleep(pollMs);

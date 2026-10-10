@@ -117,7 +117,7 @@ class AssistantWorker {
       if (login.needsUserAction || !login.loggedIn) {
         return this.holdTask(task, adapter, 'login_or_verification', login.verification || { type: 'login_required', message: '平台未登录或登录已失效' });
       }
-      const identityCheck = await this.verifyIdentity(task, localAccount, adapter);
+      const identityCheck = await this.verifyIdentity(localAccount, adapter);
       if (!identityCheck.verified) return this.holdTask(task, adapter, identityCheck.code, { type: 'identity_check', message: identityCheck.message });
 
       await this.progress(task, 'uploading', 35, '打开平台发布页面');
@@ -155,7 +155,7 @@ class AssistantWorker {
     }
   }
 
-  async verifyIdentity(task, localAccount, adapter) {
+  async verifyIdentity(localAccount, adapter) {
     const identity = await (adapter.recheckIdentity ? adapter.recheckIdentity() : adapter.checkIdentity());
     if (!identity || !identity.identity) {
       return { verified: false, code: 'identity_unverifiable', message: '无法从平台页面读取当前账号身份，已阻止继续执行；请人工核对浏览器中登录的账号' };
@@ -190,7 +190,7 @@ class AssistantWorker {
 
   holdTask(task, adapter, stage, reason, { keepStatus } = {}) {
     if (this.stopped) {
-      adapter.close().catch(() => {});
+      this.closeAdapter(adapter).catch(() => {});
       this.store.updateLocalTask(task.id, { last_error: { message: '助手正在停止，任务未挂起接管', code: 'worker_stopped' } });
       this.busy = false;
       this.currentTaskId = null;
@@ -274,10 +274,14 @@ class AssistantWorker {
       const local = this.store.getLocalTask(task.id);
       const localAccount = local && local.account_key ? this.store.getAccount(local.account_key) : null;
       if (localAccount) {
-        const recheck = await this.verifyIdentity(task, localAccount, adapter);
+        const recheck = await this.verifyIdentity(localAccount, adapter);
         if (!recheck.verified) {
           if (this.heldTasks.has(task.id)) {
-            return { outcome: 'held', reason: { code: recheck.code, message: `提交前身份核验未通过：${recheck.message}` } };
+            const reason = { code: recheck.code, message: `提交前身份核验未通过：${recheck.message}` };
+            this.store.updateLocalTask(task.id, { last_error: reason });
+            const hold = this.heldTasks.get(task.id);
+            if (hold) hold.reason = reason;
+            return { outcome: 'held', reason };
           }
           throw new Error(`提交前身份核验未通过：${recheck.message}`);
         }

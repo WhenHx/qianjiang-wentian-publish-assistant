@@ -131,21 +131,20 @@ test('F02：任意 Cookie 不再视为登录，身份读不到返回 null', asyn
 test('F02：worker 身份读不到或不匹配时阻止执行，无基线时需人工确认', async () => {
   const store = { updateAccountStatus: () => { throw new Error('执行路径不得写入身份基线'); } };
   const worker = new AssistantWorker({ config: {}, store, cloud: null, logger: null });
-  const task = { id: 'task_x' };
 
-  const unreadable = await worker.verifyIdentity(task, { account_key: 'a1', platform_identity: 'identity-A', status: 'logged_in' }, { checkIdentity: async () => ({ identity: null }) });
+  const unreadable = await worker.verifyIdentity({ account_key: 'a1', platform_identity: 'identity-A', status: 'logged_in' }, { checkIdentity: async () => ({ identity: null }) });
   assert.equal(unreadable.verified, false);
   assert.equal(unreadable.code, 'identity_unverifiable');
 
-  const mismatch = await worker.verifyIdentity(task, { account_key: 'a1', platform_identity: 'identity-A', status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-B' }) });
+  const mismatch = await worker.verifyIdentity({ account_key: 'a1', platform_identity: 'identity-A', status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-B' }) });
   assert.equal(mismatch.verified, false);
   assert.equal(mismatch.code, 'identity_mismatch');
 
-  const noBaseline = await worker.verifyIdentity(task, { account_key: 'a2', platform_identity: null, status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-C' }) });
+  const noBaseline = await worker.verifyIdentity({ account_key: 'a2', platform_identity: null, status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-C' }) });
   assert.equal(noBaseline.verified, false);
   assert.equal(noBaseline.code, 'identity_baseline_missing');
 
-  const match = await worker.verifyIdentity(task, { account_key: 'a2', platform_identity: 'identity-C', status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-C' }) });
+  const match = await worker.verifyIdentity({ account_key: 'a2', platform_identity: 'identity-C', status: 'logged_in' }, { checkIdentity: async () => ({ identity: 'identity-C' }) });
   assert.equal(match.verified, true);
 });
 

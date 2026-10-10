@@ -173,12 +173,17 @@ class ManagedBrowser {
 
   frameWrap(expression, frame) {
     if (!frame) return expression;
-    return `(function(){ const __f = window.document.querySelector(${JSON.stringify(frame)}); if (!__f || !__f.contentDocument) throw new Error('frame_not_found: ${frame}'); const document = __f.contentDocument; return (${expression}); })()`;
+    return `(function(){ const __f = window.document.querySelector(${JSON.stringify(frame)}); if (!__f || !__f.contentDocument) throw new Error(${JSON.stringify(`frame_not_found: ${frame}`)}); const document = __f.contentDocument; return (${expression}); })()`;
   }
 
   async navigate(url, { timeoutMs = 15000 } = {}) {
+    const loaded = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`页面加载超时：${url}`)), timeoutMs);
+      this.page.on('Page.loadEventFired', () => { clearTimeout(timer); resolve(); });
+    });
     await this.page.send('Page.navigate', { url });
-    await this.waitForReady({ timeoutMs });
+    await loaded;
+    await this.waitForReady({ timeoutMs: 5000 }).catch(() => {});
   }
 
   async evaluate(expression, { awaitPromise = false, timeoutMs = 30000 } = {}) {
@@ -204,6 +209,7 @@ class ManagedBrowser {
         expression: this.frameWrap(`document.querySelector(${JSON.stringify(selector)})`, frame),
         returnByValue: false
       });
+      if (handle.exceptionDetails) throw new Error(`定位文件上传控件失败：${handle.exceptionDetails.text || '页面脚本异常'}（frame: ${frame}）`);
       const obj = handle.result;
       if (!obj || obj.subtype !== 'node') throw new Error(`未找到文件上传控件：${selector}（frame: ${frame}）`);
       await this.page.send('DOM.setFileInputFiles', { files: [filePath], objectId: obj.objectId });
@@ -228,7 +234,17 @@ class ManagedBrowser {
       return true;
     })()`, frame));
     await sleep(600);
-    const rect = await this.evaluate(this.frameWrap(`(() => {
+    const rect = await this.evaluate(frame
+      ? `(() => {
+      const __f = document.querySelector(${JSON.stringify(frame)});
+      if (!__f || !__f.contentDocument) return null;
+      const el = __f.contentDocument.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const fr = __f.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return { x: r.x + fr.x, y: r.y + fr.y, width: r.width, height: r.height };
+    })()`
+      : this.frameWrap(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return null;
       const r = el.getBoundingClientRect();
