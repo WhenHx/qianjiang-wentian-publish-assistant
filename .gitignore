@@ -4,3 +4,6 @@ runtime/
 *.log
 Thumbs.db
 Desktop.ini
+services/wechat-bot/.venv/
+services/wechat-bot/config.json
+services/wechat-bot/bot.log

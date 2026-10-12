@@ -1,0 +1,26 @@
+{
+  "llm": {
+    "base_url": "https://api.moonshot.cn/v1",
+    "api_key": "在这里填你的 API Key",
+    "model": "kimi-k2-0905-preview",
+    "system_prompt": "你是微信私聊助手，用简洁、友好、口语化的中文回复。不知道就老实说不知道，不要编造。回复控制在 100 字以内。"
+  },
+  "bot": {
+    "listen_chats": [],
+    "reply_private_only": true,
+    "ignore_self": true,
+    "min_interval_seconds": 2,
+    "max_reply_length": 200,
+    "history_messages": 6,
+    "trigger_prefix": "",
+    "blocklist": []
+  },
+  "sync": {
+    "enabled": false,
+    "base_url": "",
+    "token": "",
+    "account_id": "",
+    "batch_size": 20,
+    "flush_interval_seconds": 10
+  }
+}

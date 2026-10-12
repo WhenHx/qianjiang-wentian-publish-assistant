@@ -12,6 +12,7 @@
     "start:assistant": "node src/assistant/main.js --config config/assistant.development.json",
     "start:desktop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File apps/desktop-wpf/Assistant.ps1",
     "dev": "node scripts/dev.js",
+    "start:all": "node scripts/supervisor.js",
     "test": "node --test tests/*.test.js",
     "test:unit": "node --test tests/common.test.js tests/dpapi.test.js tests/paths.test.js tests/url-safety.test.js",
     "test:integration": "node --test tests/mock-backend.test.js tests/assistant-integration.test.js",
