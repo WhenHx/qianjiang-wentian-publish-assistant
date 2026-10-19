@@ -1,0 +1,4 @@
+[2026-10-19T02:18:06.270Z] 工作目录：C:\Users\EDY\AppData\Local\Temp\qjw-soak-iDNwV1
+[2026-10-19T02:18:06.619Z] mock-backend 已就绪
+[2026-10-19T02:18:06.619Z] FAIL soak 主流程 — Cannot read properties of null (reading 'catch')
+[2026-10-19T02:18:06.619Z] 汇总：通过 0 项，失败 1 项

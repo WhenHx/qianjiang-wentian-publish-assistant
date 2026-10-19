@@ -1,0 +1,19 @@
+[2026-10-19T02:18:17.347Z] 工作目录：C:\Users\EDY\AppData\Local\Temp\qjw-soak-Z4EEN7
+[2026-10-19T02:18:17.695Z] mock-backend 已就绪
+[2026-10-19T02:18:18.628Z] assistant 已就绪
+[2026-10-19T02:18:18.663Z] PASS 绑定申请创建 — {"binding_id":"bind_PxJAbuxlrH3MDOigzBCcmg","code":"326947","poll_token":"poll_ciXfS0px6x7WrUOhRui8WXhqci74uPWc","expires_at":"2026-10-19T02:28:18.659Z","confirm_url":"http://127.0.0.1:18880/console?binding_id=bind_PxJAbuxlrH3MDOigzBCcmg"}
+[2026-10-19T02:18:18.665Z] PASS 云端确认绑定
+[2026-10-19T02:18:19.000Z] PASS 设备凭证下发
+[2026-10-19T02:18:21.492Z] 阶段 A：连续 10 个任务
+[2026-10-19T02:18:58.716Z] PASS 连续任务 10 个全部 submitted — 成功 10/10，耗时 [3765,3740,3776,3759,3434,4064,3746,3434,3768,3738]
+[2026-10-19T02:18:58.716Z] 阶段 B：并发 3 个任务，采样互斥
+[2026-10-19T02:19:10.963Z] PASS 并发任务互斥（同时执行 ≤1） — 同时活跃最大 1
+[2026-10-19T02:19:10.964Z] PASS 并发 3 个任务全部 submitted — {"task_hIp0T-7ohO9AmoUxa0eYWA":"submitted","task_ZHpaMvwO68LZvufldUwAzw":"submitted","task_tMj5w9GA5yOI8AxPskI-yg":"submitted"}
+[2026-10-19T02:19:10.964Z] 阶段 C：挂机 60 秒观察心跳
+[2026-10-19T02:20:11.387Z] PASS 挂机期间心跳持续推进 — 不同 last_seen_at 数量 31
+[2026-10-19T02:20:12.266Z] PASS 内存采样有效 — 样本 22 个
+[2026-10-19T02:20:12.266Z] PASS 内存无明显泄漏（峰值-首样本 < 100MB） — RSS 首样本 69MB 最低 69MB 峰值 79MB
+[2026-10-19T02:20:12.266Z] RSS 序列：69, 73, 70, 72, 72, 73, 74, 75, 75, 75, 76, 76, 76, 77, 77, 78, 78, 78, 78, 78, 79, 79
+[2026-10-19T02:20:13.367Z] 最终状态：{"version":"0.2.0-test","mode":"simulation","simulation":true,"submit_mode":"auto","service_url":"http://127.0.0.1:18880","bound":true,"device_id":"dev_yw24ndnM9XYWCv_9akzr8Q","bound_at":"2026-10-19T02:18:18.869Z","dpapi_available":true,"worker":{"running":true,"busy":true,"paused":false,"current_task_id":null,"held_tasks":[]},"pending_binding":null,"hostname":"CHINAMI-I3ODF34"}
+[2026-10-19T02:20:13.367Z] PASS 助手 stderr 无异常
+[2026-10-19T02:20:13.368Z] 汇总：通过 10 项，失败 0 项

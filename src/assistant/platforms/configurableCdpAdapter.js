@@ -209,6 +209,10 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
   async submitOnce() {
     const browser = await this.ensureBrowser();
     this.lastSubmitUrl = await browser.currentUrl().catch(() => '');
+    const apiPatterns = this.selectors.publishApiPatterns || [];
+    if (apiPatterns.length && typeof browser.startResponseCapture === 'function') {
+      this.publishCapture = browser.startResponseCapture(apiPatterns);
+    }
     const dismissible = ['我知道了', '知道了', '跳过', '以后再说'];
     await browser.evaluate(browser.frameWrap(`(() => {
       for (const text of ${JSON.stringify(dismissible)}) {
@@ -295,26 +299,73 @@ class ConfigurableCdpAdapter extends PlatformAdapter {
     return screenshot ? { screenshot_png_base64: screenshot } : {};
   }
 
+  async capturePlatformResult({ waitMs = 8000, pollMs = 500 } = {}) {
+    const capture = this.publishCapture;
+    this.publishCapture = null;
+    if (!capture) return {};
+    try {
+      const idFields = this.selectors.resultIdFields || ['item_id', 'aweme_id', 'note_id', 'feed_id'];
+      const extract = () => {
+        for (const entry of capture.list()) {
+          let json = null;
+          try { json = JSON.parse(entry.body); } catch { continue; }
+          if (!json || typeof json !== 'object') continue;
+          const statusCode = json.status_code ?? json.statusCode ?? json.BaseResp?.StatusCode;
+          if (statusCode !== undefined && Number(statusCode) !== 0) continue;
+          for (const field of idFields) {
+            const value = json[field];
+            if ((typeof value === 'string' || typeof value === 'number') && String(value)) {
+              return {
+                platform_item_id: String(value),
+                platform_item_id_field: field,
+                publish_api: entry.url.split('?')[0],
+                publish_api_status: entry.status
+              };
+            }
+          }
+        }
+        return null;
+      };
+      const deadline = Date.now() + waitMs;
+      let found = extract();
+      while (!found && Date.now() < deadline) {
+        await sleep(pollMs);
+        found = extract();
+      }
+      if (!found) return { platform_item_id: null, platform_item_id_note: '发布接口响应中未捕获作品标识' };
+      return found;
+    } finally {
+      await capture.stop().catch(() => {});
+    }
+  }
+
   async verifyResult({ timeoutMs = 45000, pollMs = 1000 } = {}) {
     const browser = await this.ensureBrowser();
     const startUrl = this.lastSubmitUrl || '';
     const successUrls = this.selectors.postSubmitSuccessUrls || [];
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    let result = null;
+    while (Date.now() < deadline && !result) {
       const url = await browser.currentUrl().catch(() => '');
       const text = await this.pageText(browser);
       const failure = (this.selectors.failurePatterns || []).find(item => text.includes(item));
-      if (failure) return { outcome: 'failed', evidence: { failure_pattern: failure, url, ...(await this.evidenceExtra()) } };
-      const success = (this.selectors.successPatterns || []).find(item => text.includes(item));
-      if (success) return { outcome: 'submitted', evidence: { success_pattern: success, platform_status: 'accepted_or_reviewing', url, ...(await this.evidenceExtra()) } };
-      const redirected = url && successUrls.some(pattern => url.includes(pattern)) && (!startUrl || url !== startUrl);
-      if (redirected) {
-        return { outcome: 'submitted', evidence: { redirect: url, platform_status: 'redirected_to_manage', ...(await this.evidenceExtra()) } };
+      if (failure) result = { outcome: 'failed', evidence: { failure_pattern: failure, url, ...(await this.evidenceExtra()) } };
+      if (!result) {
+        const success = (this.selectors.successPatterns || []).find(item => text.includes(item));
+        if (success) result = { outcome: 'submitted', evidence: { success_pattern: success, platform_status: 'accepted_or_reviewing', url, ...(await this.evidenceExtra()) } };
       }
-      await sleep(pollMs);
+      if (!result) {
+        const redirected = url && successUrls.some(pattern => url.includes(pattern)) && (!startUrl || url !== startUrl);
+        if (redirected) result = { outcome: 'submitted', evidence: { redirect: url, platform_status: 'redirected_to_manage', ...(await this.evidenceExtra()) } };
+      }
+      if (!result) await sleep(pollMs);
     }
-    const url = await browser.currentUrl().catch(() => '');
-    return { outcome: 'outcome_unknown', evidence: { reason: '等待平台结果超时，未识别成功或失败特征', url, ...(await this.evidenceExtra()) } };
+    if (!result) {
+      const url = await browser.currentUrl().catch(() => '');
+      result = { outcome: 'outcome_unknown', evidence: { reason: '等待平台结果超时，未识别成功或失败特征', url, ...(await this.evidenceExtra()) } };
+    }
+    result.evidence = { ...result.evidence, ...(await this.capturePlatformResult()) };
+    return result;
   }
 
   async close() { await this.browser?.close(); }

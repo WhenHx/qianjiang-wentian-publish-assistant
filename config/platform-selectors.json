@@ -12,6 +12,12 @@
     "postSubmitSuccessUrls": [
       "content/manage"
     ],
+    "publishApiPatterns": [
+      "/web/api/media/aweme/create"
+    ],
+    "resultIdFields": [
+      "item_id"
+    ],
     "loggedInIndicators": [
       "内容管理",
       "作品发布",

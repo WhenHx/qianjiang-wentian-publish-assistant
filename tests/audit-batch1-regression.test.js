@@ -289,3 +289,83 @@ test('F01：换绑业务用户后本机账号、任务与云端同步按主体�
   assert.equal(accountsBackAsA.data.accounts.length, 1);
   assert.equal(accountsBackAsA.data.accounts[0].profile_dir, profileDir);
 });
+
+test('F07补充：verifyResult 合并发布接口捕获的平台作品标识', async () => {
+  const account = { account_key: 'localacct_x5', platform: 'douyin', nickname: '作品标识', platform_identity: 'identity-A', profile_dir: 'x' };
+  const adapter = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  const stub = {
+    currentUrl: async () => 'https://creator.douyin.com/creator-micro/content/upload',
+    bodyText: async () => '发布成功',
+    saveCookies: async () => ({ cookies: [] }),
+    screenshotBase64: async () => null,
+    evaluate: async () => null
+  };
+  adapter.browser = stub;
+  let stopped = false;
+  adapter.publishCapture = {
+    list: () => [
+      { url: 'https://creator.douyin.com/web/api/media/aweme/create_v2/?a=1', status: 200, body: '{"status_code":3010,"status_msg":"参数错误"}' },
+      { url: 'https://creator.douyin.com/web/api/media/aweme/create_v2/?a=1', status: 200, body: '{"extra":{"logid":"x"},"item_id":"7696484688709324047","status_code":0}' }
+    ],
+    stop: async () => { stopped = true; }
+  };
+  const result = await adapter.verifyResult({ timeoutMs: 3000, pollMs: 50 });
+  assert.equal(result.outcome, 'submitted');
+  assert.equal(result.evidence.platform_item_id, '7696484688709324047');
+  assert.equal(result.evidence.platform_item_id_field, 'item_id');
+  assert.ok(result.evidence.publish_api.includes('aweme/create_v2'));
+  assert.equal(stopped, true, '捕获必须在结果判定后停止');
+
+  const adapterNoCapture = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  adapterNoCapture.browser = stub;
+  const plain = await adapterNoCapture.verifyResult({ timeoutMs: 3000, pollMs: 50 });
+  assert.equal(plain.outcome, 'submitted');
+  assert.equal(plain.evidence.platform_item_id, undefined);
+
+  const adapterEmpty = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  adapterEmpty.publishCapture = { list: () => [{ url: 'https://creator.douyin.com/web/api/media/aweme/create_v2/', status: 200, body: '{"status_code":0}' }], stop: async () => {} };
+  const empty = await adapterEmpty.capturePlatformResult({ waitMs: 200, pollMs: 50 });
+  assert.equal(empty.platform_item_id, null);
+  assert.ok(empty.platform_item_id_note);
+});
+
+test('提交前开启发布接口捕获，且只捕获匹配的 JSON 响应', async () => {
+  const { ManagedBrowser } = require('../src/assistant/browser/cdpClient');
+  const listeners = new Map();
+  const fakePage = {
+    on(method, fn) { listeners.set(method, [...(listeners.get(method) || []), fn]); },
+    off(method, fn) { const list = listeners.get(method) || []; const index = list.indexOf(fn); if (index >= 0) list.splice(index, 1); },
+    count(method) { return (listeners.get(method) || []).length; },
+    emit(method, params) { for (const fn of listeners.get(method) || []) fn(params); },
+    async send(method) {
+      if (method === 'Network.getResponseBody') return { body: '{"status_code":0,"item_id":"42"}' };
+      return {};
+    }
+  };
+  const browser = new ManagedBrowser({ browserName: 'edge', profileDir: 'x', logger: null });
+  browser.page = fakePage;
+  const capture = browser.startResponseCapture(['aweme/create']);
+  fakePage.emit('Network.responseReceived', { requestId: 'r1', response: { url: 'https://creator.douyin.com/web/api/media/aweme/create_v2/?x=1', status: 200, mimeType: 'application/json' } });
+  fakePage.emit('Network.responseReceived', { requestId: 'r2', response: { url: 'https://creator.douyin.com/aweme/v1/creator/user/info/', status: 200, mimeType: 'application/json' } });
+  fakePage.emit('Network.loadingFinished', { requestId: 'r1' });
+  fakePage.emit('Network.loadingFinished', { requestId: 'r2' });
+  await capture.stop();
+  assert.equal(capture.list().length, 1);
+  assert.ok(capture.list()[0].url.includes('create_v2'));
+  assert.equal(fakePage.count('Network.responseReceived'), 0, 'stop 后必须注销监听');
+  assert.equal(fakePage.count('Network.loadingFinished'), 0);
+
+  const account = { account_key: 'localacct_x6', platform: 'douyin', nickname: '捕获开关', platform_identity: 'identity-A', profile_dir: 'x' };
+  const adapter = new ConfigurableCdpAdapter({ platform: 'douyin', account, browserName: 'edge', logger: null });
+  let captureStarted = false;
+  adapter.browser = {
+    currentUrl: async () => 'https://creator.douyin.com/creator-micro/content/upload',
+    bodyText: async () => '',
+    evaluate: async () => true,
+    frameWrap: expression => expression,
+    startResponseCapture: () => { captureStarted = true; return { list: () => [], stop: async () => {} }; }
+  };
+  const submitted = await adapter.submitOnce();
+  assert.equal(submitted.clicked, true);
+  assert.equal(captureStarted, true, 'submitOnce 必须在点击前开启发布接口捕获');
+});

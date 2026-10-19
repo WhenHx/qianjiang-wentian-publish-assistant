@@ -71,6 +71,13 @@ class CdpConnection {
     this.listeners.get(method).push(listener);
   }
 
+  off(method, listener) {
+    const list = this.listeners.get(method);
+    if (!list) return;
+    const index = list.indexOf(listener);
+    if (index >= 0) list.splice(index, 1);
+  }
+
   async send(method, params = {}, timeoutMs = 30000) {
     await this.connect();
     const id = this.nextId++;
@@ -294,6 +301,43 @@ class ManagedBrowser {
   async screenshotBase64() {
     const result = await this.page.send('Page.captureScreenshot', { format: 'png' }).catch(() => null);
     return result?.data || null;
+  }
+
+  // 监听 URL 命中 patterns（子串匹配）的 JSON 响应，用于捕获发布接口返回的作品标识
+  startResponseCapture(patterns, { maxEntries = 50, maxBodyChars = 8192 } = {}) {
+    const captured = [];
+    const inFlight = new Set();
+    const meta = new Map();
+    const matched = url => patterns.some(pattern => url.includes(pattern));
+    const onResponse = params => {
+      const { requestId, response } = params;
+      if (!response || !matched(response.url || '')) return;
+      meta.set(requestId, { url: response.url, status: response.status, mime: response.mimeType || '' });
+    };
+    const onFinished = params => {
+      const info = meta.get(params.requestId);
+      meta.delete(params.requestId);
+      if (!info || !/json/i.test(info.mime)) return;
+      const fetchBody = this.page.send('Network.getResponseBody', { requestId: params.requestId }, 10000)
+        .then(body => {
+          if (captured.length >= maxEntries) return;
+          captured.push({ url: info.url, status: info.status, body: (body.body || '').slice(0, maxBodyChars), captured_at: new Date().toISOString() });
+        })
+        .catch(() => {});
+      inFlight.add(fetchBody);
+      fetchBody.finally(() => inFlight.delete(fetchBody));
+    };
+    this.page.on('Network.responseReceived', onResponse);
+    this.page.on('Network.loadingFinished', onFinished);
+    return {
+      list: () => captured.slice(),
+      stop: async ({ waitMs = 3000 } = {}) => {
+        this.page.off('Network.responseReceived', onResponse);
+        this.page.off('Network.loadingFinished', onFinished);
+        const deadline = Date.now() + waitMs;
+        while (inFlight.size && Date.now() < deadline) await sleep(100);
+      }
+    };
   }
 
   async close() {
