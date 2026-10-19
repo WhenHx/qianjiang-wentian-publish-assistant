@@ -13,7 +13,10 @@
     "max_reply_length": 200,
     "history_messages": 6,
     "trigger_prefix": "",
-    "blocklist": []
+    "blocklist": [],
+    "admin_chats": [
+      "文件传输助手"
+    ]
   },
   "sync": {
     "enabled": false,
@@ -22,5 +25,27 @@
     "account_id": "",
     "batch_size": 20,
     "flush_interval_seconds": 10
+  },
+  "kb": {
+    "enabled": false,
+    "base_url": "",
+    "token": "",
+    "account_id": "",
+    "top_k": 5,
+    "min_score": 0,
+    "timeout_seconds": 10
+  },
+  "friend": {
+    "enabled": false,
+    "auto_accept": true,
+    "accept_remark_template": "",
+    "accept_tags": [],
+    "accept_permission": "朋友圈",
+    "welcome_message": "",
+    "welcome_use_llm": false,
+    "add_to_listen": true,
+    "poll_interval_seconds": 30,
+    "daily_add_limit": 5,
+    "add_requests": []
   }
 }

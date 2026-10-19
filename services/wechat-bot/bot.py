@@ -44,11 +44,12 @@ class LlmClient:
 
 
 class ReplyBot:
-    def __init__(self, config, sync=None):
+    def __init__(self, config, sync=None, kb=None):
         self.cfg = config
         self.bot_cfg = config["bot"]
         self.llm = LlmClient(config["llm"])
         self.sync = sync
+        self.kb = kb
         self.histories = {}
         self.last_reply_at = {}
         self.handled_hashes = set()
@@ -102,7 +103,12 @@ class ReplyBot:
             who = chat.who
             history = self.histories.setdefault(who, [])
             history.append({"role": "user", "content": msg.content})
-            reply = self.llm.chat(history[-self.bot_cfg.get("history_messages", 6) * 2:])
+            window = history[-self.bot_cfg.get("history_messages", 6) * 2:]
+            kb_hits = self.kb.search(msg.content) if self.kb else []
+            if kb_hits:
+                context = "以下知识库内容可能与用户问题相关，供参考：\n" + "\n---\n".join(kb_hits)
+                window = window[:-1] + [{"role": "system", "content": context}, window[-1]]
+            reply = self.llm.chat(window)
             reply = reply[: self.bot_cfg.get("max_reply_length", 200)]
             history.append({"role": "assistant", "content": reply})
             self.recent_replies.append(reply)
@@ -157,12 +163,17 @@ def main():
     config = load_config()
 
     from wxauto4 import WeChat
+    from commands import try_handle
+    from friend import FriendManager
+    from group import GroupManager
+    from kb import KnowledgeBaseClient
     from sync import ChatSyncClient
 
     wx = WeChat(ads=False)
     sync = ChatSyncClient(config.get("sync", {}))
     sync.start()
-    bot = ReplyBot(config, sync)
+    kb = KnowledgeBaseClient(config.get("kb", {}))
+    bot = ReplyBot(config, sync, kb)
 
     listen = config["bot"].get("listen_chats") or []
     if not listen:
@@ -185,13 +196,39 @@ def main():
         sys.exit(1)
 
     logger.info("机器人已启动（轮询 %ss），Ctrl+C 退出", interval)
+
+    last_preview = {}
+    for who in listen:
+        s = find_session(wx, who)
+        last_preview[who] = s.info.get('content', '') if s else ''
+
+    def attach_new_friend(name):
+        if name in subs:
+            return
+        sub = open_sub(wx, name)
+        for m in sub.GetAllMessage():
+            bot.handled_hashes.add(m.hash)
+        subs[name] = sub
+        listen.append(name)
+        s = find_session(wx, name)
+        last_preview[name] = s.info.get('content', '') if s else ''
+        logger.info("新好友已加入监听: %s", name)
+
+    friend_cfg = config.get("friend", {})
+    friend_mgr = FriendManager(wx, friend_cfg, llm=bot.llm,
+                               on_new_friend=attach_new_friend if friend_cfg.get("add_to_listen", True) else None)
+    friend_mgr.process_add_requests()
+    group_mgr = GroupManager(wx)
+    admin_chats = set(bot.bot_cfg.get("admin_chats") or ["文件传输助手"])
+
     try:
-        last_preview = {}
-        for who in listen:
-            s = find_session(wx, who)
-            last_preview[who] = s.info.get('content', '') if s else ''
+        friend_poll = float(friend_cfg.get("poll_interval_seconds") or 30)
+        last_friend_poll = 0.0
         while True:
-            for who in listen:
+            if friend_mgr.enabled and time.time() - last_friend_poll >= friend_poll:
+                last_friend_poll = time.time()
+                friend_mgr.sync_new_friends()
+            for who in list(listen):
                 try:
                     s = find_session(wx, who)
                     if not s:
@@ -206,8 +243,18 @@ def main():
                     msgs = chat.GetAllMessage()
                     for msg in msgs:
                         bot.on_observed(msg, chat)
-                        if msg.hash not in bot.handled_hashes:
-                            bot.on_message(msg, chat)
+                        if msg.hash in bot.handled_hashes:
+                            continue
+                        # 管理指令：管理会话里自己发的文本，优先于 LLM 回复
+                        if who in admin_chats and msg.attr == "self" and str(msg.type).lower() == "text":
+                            bot.handled_hashes.add(msg.hash)
+                            result = try_handle((msg.content or "").strip(), friend_mgr=friend_mgr, group_mgr=group_mgr)
+                            if result is not None:
+                                chat.SendMsg(result)
+                                bot.recent_replies.append(result)
+                                logger.info("已执行管理指令: %s", (msg.content or "")[:30])
+                                continue
+                        bot.on_message(msg, chat)
                 except Exception as e:
                     logger.warning("会话 %s 读取失败: %s", who, e)
             time.sleep(interval)
