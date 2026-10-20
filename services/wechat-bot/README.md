@@ -4,16 +4,16 @@
 
 ## 环境
 
-- Windows + 微信 PC 客户端（已登录）
-- Python **3.12** x64（硬性要求，与 wxautox4 二进制绑定）
-- `pip install ../wxauto4-plus`（本地包）+ `requests`
+- Windows + 微信 PC 客户端（已登录，4.1.x 实测）
+- Python **3.12** x64
+- `pip install wxauto4==41.1.7 requests`（免费版即可，全部功能基于它的 UIA 层实现；**不需要也不应使用 wxauto4-plus**，见文末合规说明）
 
 ## 使用
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-pip install ../wxauto4-plus requests
+pip install wxauto4==41.1.7 requests
 copy config.example.json config.json   # 填入 API Key 和监听对象
 python bot.py
 ```
@@ -123,6 +123,10 @@ python bot.py
 ```
 
 注意：主动加好友风控最严，`daily_add_limit` 建议保持个位数。
+
+## 合规说明
+
+本服务只依赖免费版 `wxauto4`（PyPI 可装）。**wxauto4-plus 是付费版 wxautox4 的授权绕过封装，不得随助手分发**：其钉死的 wxautox4 40.1.15 与微信 4.1.x UI 不兼容（实测不可用），且分发绕过工具+未授权商业二进制有法律风险。免费版 wxauto4 在 PyPI 未声明许可证，商用分发前请人工确认上游（cluic/wxauto）许可条款；如有疑问，购买 wxautox4 商业授权是正路。
 
 ## 群聊管理（group.py，微信 4.1.15 实测）
 
