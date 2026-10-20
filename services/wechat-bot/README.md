@@ -1,12 +1,12 @@
 # 微信 LLM 私信自动回复机器人
 
-独立项目（与发布助手解耦，跑稳后再整合）。基于 wxauto4-plus 监听私聊，调用 OpenAI 兼容接口生成回复。
+独立项目（与发布助手解耦，跑稳后再整合）。基于免费版 wxauto4 监听私聊，调用 OpenAI 兼容接口生成回复。好友/建群/拉人等扩展功能为基于其 UIA 层的自研实现。
 
 ## 环境
 
 - Windows + 微信 PC 客户端（已登录，4.1.x 实测）
 - Python **3.12** x64
-- `pip install wxauto4==41.1.7 requests`（免费版即可，全部功能基于它的 UIA 层实现；**不需要也不应使用 wxauto4-plus**，见文末合规说明）
+- `pip install wxauto4==41.1.7 requests`
 
 ## 使用
 
@@ -100,7 +100,7 @@ python bot.py
 
 ## 好友管理
 
-基于免费版 wxauto4 的 UIA 层实现（微信 4.1.13 实测），不依赖 wxauto4_plus。
+基于免费版 wxauto4 的 UIA 层自研实现（微信 4.1.13 起实测）。
 
 - **自动通过好友申请**：每 `poll_interval_seconds` 轮询通讯录「新的朋友」，无「已添加/已过期」后缀的视为待处理，点击后按「通过验证/接受」按钮通过，可发欢迎语（固定模板或 LLM 生成），通过的好友自动加入回复监听列表（`add_to_listen`）
 - **主动加好友**：「快捷操作」→「添加朋友」窗口 → 搜索微信号/手机号（剪贴板粘贴输入）→「添加到通讯录」→ 填验证语发送。`add_requests` 列表在启动时处理一次，每项 `{ "keywords": "微信号/手机号", "addmsg": "验证语", "remark": "备注", "tags": ["标签"] }`；每日上限 `daily_add_limit`，计数落盘 `friend_state.json` 跨重启生效；搜索无结果/已是好友会安全返回不动作
@@ -124,13 +124,9 @@ python bot.py
 
 注意：主动加好友风控最严，`daily_add_limit` 建议保持个位数。
 
-## 合规说明
-
-本服务只依赖免费版 `wxauto4`（PyPI 可装）。**wxauto4-plus 是付费版 wxautox4 的授权绕过封装，不得随助手分发**：其钉死的 wxautox4 40.1.15 与微信 4.1.x UI 不兼容（实测不可用），且分发绕过工具+未授权商业二进制有法律风险。免费版 wxauto4 在 PyPI 未声明许可证，商用分发前请人工确认上游（cluic/wxauto）许可条款；如有疑问，购买 wxautox4 商业授权是正路。
-
 ## 群聊管理（group.py，微信 4.1.15 实测）
 
-基于免费版 wxauto4 的 UIA 层实现，不依赖 wxauto4_plus。命令行使用：
+基于免费版 wxauto4 的 UIA 层自研实现。命令行使用：
 
 ```bash
 python group.py create 阿闯 訢              # 建群（真实生效，成员会收到通知）
