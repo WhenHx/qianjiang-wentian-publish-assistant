@@ -12,7 +12,7 @@ function makeStore(t) {
 }
 
 // 桩 CDP 页面：按表达式内容返回预设数据
-function fakePage({ conversations = [], messages = [], verifyOk = true } = {}) {
+function fakePage({ conversations = [], messages = [], verifyOk = true, noConversations = false } = {}) {
   const sent = [];
   return {
     sent,
@@ -26,6 +26,7 @@ function fakePage({ conversations = [], messages = [], verifyOk = true } = {}) {
         else if (expr.includes('new Set([...all.slice')) value = [...new Set([...messages.slice(0, 4), ...messages.slice(-4)].map(m => m.text))]; // 会话一致性校验（首尾气泡文本）
         else if (expr.includes('conversationConversationItemwrapper') && expr.includes('map')) value = conversations;
         else if (expr.includes('messageMessageBoxmessageBox')) value = messages;
+        else if (expr.includes('const norm')) value = noConversations ? null : { x: 100, y: 100 }; // 会话条目定位
         else if (expr.includes('conversationConversationItemtitle')) value = { x: 100, y: 100 };
         else if (expr.includes('messageEditorinputArea')) value = true;
         else if (expr.includes('"消息"')) value = { x: 100, y: 50 };
@@ -205,6 +206,19 @@ test('上行失败的记录在下轮自动补传并拿到回复', async t => {
   const row = store.getInteraction('int_retry');
   assert.equal(row.cloudId, 'cloud-int-1');
   assert.equal(row.draft, '补传后的回复');
+});
+
+test('定位失败不回传终态：本地保持可重试，云端不锁死', async t => {
+  const store = makeStore(t);
+  // 桩页面：无会话 → openConversation 抛「会话不存在」
+  const page = fakePage({ noConversations: true });
+  const cloud = fakeCloud();
+  const mgr = makeManager(store, page, cloud);
+  store.insertInteraction({ id: 'int_loc', platform: 'douyin', kind: 'dm', peer: '不存在的人', incomingText: '问', draft: '答', dedupHash: 'h5', cloudId: 'cloud-int-1' });
+  await assert.rejects(() => mgr.sendInteraction('int_loc'), /会话不存在/);
+  const row = store.getInteraction('int_loc');
+  assert.equal(row.status, 'draft_pending'); // 仍可重试
+  assert.equal(cloud.reported.length, 0); // 云端未被锁定为 failed
 });
 
 test('LlmClient：ENV 变量替换与未就绪判定', () => {

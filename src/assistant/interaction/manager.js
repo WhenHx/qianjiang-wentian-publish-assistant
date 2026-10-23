@@ -118,49 +118,52 @@ class InteractionManager {
 
   async pollDm(platform) {
     const browser = await this.ensureBrowser(platform);
-    const results = { detected: 0, replied: 0, sent: 0, leads: 0 };
+    let driver;
+    let conversations;
     if (platform === 'douyin') {
-      const driver = new DouyinDmDriver(browser.page);
+      driver = new DouyinDmDriver(browser.page);
       await driver.openPanel();
-      const conversations = await driver.listConversations();
-      for (const convo of conversations) {
-        // 预览去重（轻量）：预览没变说明没有新动静，跳过；预览变了才开会话细看
-        const previewKey = dedupHash(platform, 'dm', convo.name, `preview:${convo.preview}`);
-        if (this.store.getSetting(`int_seen_${previewKey}`, null)) continue;
-        await driver.openConversation(convo.name);
-        if (!(await driver.verifyConversation(convo.preview))) {
-          this.logger.warn('会话内容与列表预览不一致，疑似开错会话，跳过', { peer: convo.name });
-          continue;
-        }
-        const messages = await driver.readMessages();
-        const previewCore = (convo.preview || '').replace(/[…\s]+$/u, '').trim();
-        this.store.setSetting(`int_seen_${previewKey}`, '1');
-        // 来信选择：DOM 最新在前。最新的未记录来信做回复；所有未记录来信都过留微识别
-        const incomings = messages.filter(m => !m.fromMe);
-        const unrecorded = incomings.filter(m => !this.store.getInteractionByHash(dedupHash(platform, 'dm', convo.name, m.text)));
-        for (const m of unrecorded) {
-          const lead = await this.maybeCreateLead({ platform, peer: convo.name, incoming: m, hash: dedupHash(platform, 'dm', convo.name, m.text) });
-          if (lead) results.leads += 1;
-        }
-        let incoming = unrecorded.find(m => previewCore && (m.text.startsWith(previewCore.slice(0, 12)) || previewCore.startsWith(m.text.slice(0, 12))));
-        if (!incoming) incoming = unrecorded[0];
-        if (!incoming) continue;
-        // 内容级去重：同一客户同一条来信只入队一次（不受已方回复改变预览的影响）
-        const hash = dedupHash(platform, 'dm', convo.name, incoming.text);
-        results.detected += 1;
-        const row = await this.uploadAndDraft({ platform, kind: 'dm', peer: convo.name, incoming, messages, hash, conversationKey: convo.name });
-        if (row && row.draft) results.replied += 1;
-        if (row && row.draft && this.interactionCfg.autoSend) {
-          await driver.sendMessage(row.draft);
-          await this.reportResult(row, 'sent', { sent_text: row.draft });
-          results.sent += 1;
-        }
-      }
+      conversations = await driver.listConversations();
     } else if (platform === 'shipinhao') {
-      const driver = new ShipinhaoDriver(browser.page);
+      driver = new ShipinhaoDriver(browser.page);
       await driver.openDmPage();
-      await driver.listConversations();
-      // 会话条目结构待真实数据校准
+      conversations = await driver.listConversations();
+    } else {
+      return { detected: 0, replied: 0, sent: 0, leads: 0 };
+    }
+    const results = { detected: 0, replied: 0, sent: 0, leads: 0 };
+    for (const convo of conversations) {
+      // 预览去重（轻量）：预览没变说明没有新动静，跳过；预览变了才开会话细看
+      const previewKey = dedupHash(platform, 'dm', convo.name, `preview:${convo.preview}`);
+      if (this.store.getSetting(`int_seen_${previewKey}`, null)) continue;
+      await driver.openConversation(convo.name);
+      if (platform === 'douyin' && !(await driver.verifyConversation(convo.preview))) {
+        this.logger.warn('会话内容与列表预览不一致，疑似开错会话，跳过', { peer: convo.name });
+        continue;
+      }
+      const messages = await driver.readMessages();
+      const previewCore = (convo.preview || '').replace(/[…\s]+$/u, '').trim();
+      this.store.setSetting(`int_seen_${previewKey}`, '1');
+      // 来信选择：DOM 最新在前。最新的未记录来信做回复；所有未记录来信都过留微识别
+      const incomings = messages.filter(m => !m.fromMe);
+      const unrecorded = incomings.filter(m => !this.store.getInteractionByHash(dedupHash(platform, 'dm', convo.name, m.text)));
+      for (const m of unrecorded) {
+        const lead = await this.maybeCreateLead({ platform, peer: convo.name, incoming: m, hash: dedupHash(platform, 'dm', convo.name, m.text) });
+        if (lead) results.leads += 1;
+      }
+      let incoming = unrecorded.find(m => previewCore && (m.text.startsWith(previewCore.slice(0, 12)) || previewCore.startsWith(m.text.slice(0, 12))));
+      if (!incoming) incoming = unrecorded[0];
+      if (!incoming) continue;
+      // 内容级去重：同一客户同一条来信只入队一次（不受已方回复改变预览的影响）
+      const hash = dedupHash(platform, 'dm', convo.name, incoming.text);
+      results.detected += 1;
+      const row = await this.uploadAndDraft({ platform, kind: 'dm', peer: convo.name, incoming, messages, hash, conversationKey: convo.name });
+      if (row && row.draft) results.replied += 1;
+      if (row && row.draft && this.interactionCfg.autoSend) {
+        await driver.sendMessage(row.draft);
+        await this.reportResult(row, 'sent', { sent_text: row.draft });
+        results.sent += 1;
+      }
     }
     return results;
   }
@@ -320,6 +323,11 @@ class InteractionManager {
           throw new Error(`会话一致性校验失败，疑似开错会话：${row.peer}`);
         }
         await driver.sendMessage(row.draft);
+      } else if (row.platform === 'shipinhao' && row.kind === 'dm') {
+        const driver = new ShipinhaoDriver(browser.page);
+        await driver.openDmPage();
+        await driver.openConversation(row.peer);
+        await driver.sendMessage(row.draft);
       } else {
         throw new Error(`${row.platform}/${row.kind} 的发送路径待校准`);
       }
@@ -327,7 +335,13 @@ class InteractionManager {
       return this.store.getInteraction(id);
     } catch (e) {
       this.logger.warn('互动发送失败', { id, peer: row.peer, error: e.message });
-      await this.reportResult(row, 'failed', null, { message: e.message });
+      // 定位类错误（没找到会话/输入框）说明根本没发出，不回传终态、本地保持可重试；
+      // 只有真正执行过发送动作的失败（如气泡验证失败、平台拦截）才回传 failed 终态
+      if (/会话不存在|输入框|未生效|未弹出|未就绪/.test(e.message)) {
+        this.store.updateInteraction(id, { error: { message: e.message } });
+      } else {
+        await this.reportResult(row, 'failed', null, { message: e.message });
+      }
       throw e;
     }
   }

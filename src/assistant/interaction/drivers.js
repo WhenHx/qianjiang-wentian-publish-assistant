@@ -220,17 +220,101 @@ class ShipinhaoDriver {
     await sleep(8000);
   }
 
+  // iframe 文档定位
+  async _doc() {
+    return SPH_IFRAME_PIERCE;
+  }
+
+  // 读取两个 tab（私信 + 打招呼消息）的会话列表
   async listConversations() {
-    // 会话列表在 iframe 的 .finder-list-wrap 内；条目类名待真实数据校准
+    const all = [];
+    for (const tab of ['私信', '打招呼消息']) {
+      const switched = await evaluate(this.page, `(() => {
+        const doc = ${SPH_IFRAME_PIERCE};
+        if (!doc) return false;
+        const t = [...doc.querySelectorAll('.weui-desktop-tab__nav, .tab-title')].find(e => (e.innerText || '').trim() === ${JSON.stringify(tab)});
+        if (t) { t.click(); return true; }
+        return false;
+      })()`);
+      if (!switched) continue;
+      await sleep(3000);
+      const items = (await evaluate(this.page, `(() => {
+        const doc = ${SPH_IFRAME_PIERCE};
+        if (!doc) return [];
+        return [...doc.querySelectorAll('.session-wrap')].map(s => ({
+          name: ((s.querySelector('.feed-title .name') || {}).innerText || '').trim(),
+          preview: (s.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120),
+          time: ''
+        })).filter(c => c.name);
+      })()`)) || [];
+      for (const c of items) all.push({ ...c, tab });
+    }
+    return all;
+  }
+
+  async openConversation(name) {
+    // 会话可能在「私信」或「打招呼消息」tab，两个都找
+    for (const tab of ['私信', '打招呼消息']) {
+      await evaluate(this.page, `(() => {
+        const doc = ${SPH_IFRAME_PIERCE};
+        if (!doc) return;
+        const t = [...doc.querySelectorAll('.weui-desktop-tab__nav, .tab-title')].find(e => (e.innerText || '').trim() === ${JSON.stringify(tab)});
+        if (t) t.click();
+      })()`);
+      await sleep(2500);
+      const clicked = await evaluate(this.page, `(() => {
+        const doc = ${SPH_IFRAME_PIERCE};
+        if (!doc) return false;
+        const item = [...doc.querySelectorAll('.session-wrap')].find(s => ((s.querySelector('.feed-title .name') || {}).innerText || '').trim() === ${JSON.stringify(name)});
+        if (!item) return false;
+        item.click();
+        return true;
+      })()`);
+      if (clicked) {
+        await sleep(4000);
+        return;
+      }
+    }
+    throw new Error(`会话不存在: ${name}`);
+  }
+
+  async readMessages() {
     return (await evaluate(this.page, `(() => {
       const doc = ${SPH_IFRAME_PIERCE};
       if (!doc) return [];
-      const wrap = doc.querySelector('.finder-list-wrap');
-      if (!wrap) return [];
-      return [...wrap.querySelectorAll('[class*=item],[class*=Item],li')]
-        .map(e => ({ name: (e.innerText || '').trim().slice(0, 40), preview: '', time: '' }))
-        .filter(c => c.name && c.name.length < 40);
+      return [...doc.querySelectorAll('.bubble')].map(b => ({
+        fromMe: (b.className || '').toString().includes('bubble-right'),
+        text: ((b.querySelector('.message-plain') || b).innerText || '').trim()
+      })).filter(m => m.text);
     })()`)) || [];
+  }
+
+  async sendMessage(text) {
+    const has = await evaluate(this.page, `(() => { const doc = ${SPH_IFRAME_PIERCE}; return !!(doc && doc.querySelector('textarea.edit_area')); })()`);
+    if (!has) throw new Error('找不到私信输入框（会话可能未打开）');
+    await evaluate(this.page, `(() => { const doc = ${SPH_IFRAME_PIERCE}; const t = doc.querySelector('textarea.edit_area'); t.focus(); })()`);
+    await sleep(300);
+    await this.page.send('Input.insertText', { text });
+    await sleep(500);
+    // 视频号输入框：Enter 发送
+    await this.page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await this.page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await sleep(2500);
+    // 发送验证：最后一条右侧气泡内容与发送内容一致
+    const verified = await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return false;
+      const mine = [...doc.querySelectorAll('.bubble-right')];
+      if (!mine.length) return false;
+      const last = ((mine[mine.length - 1].querySelector('.message-plain') || mine[mine.length - 1]).innerText || '').trim();
+      return last.length > 0 && ${JSON.stringify(text)}.slice(0, 20).startsWith(last.slice(0, 10));
+    })()`);
+    if (!verified) {
+      try {
+        await evaluate(this.page, `(() => { const doc = ${SPH_IFRAME_PIERCE}; const t = doc.querySelector('textarea.edit_area'); if (t) { t.focus(); t.value = ''; } })()`);
+      } catch {}
+      throw new Error('发送验证失败：最新已方气泡与发送内容不符，按未发出处理');
+    }
   }
 
   async listCommentWorks() {
@@ -239,7 +323,8 @@ class ShipinhaoDriver {
       if (!doc) return [];
       return [...doc.querySelectorAll('.comment-feed-wrap')].map(w => ({
         name: ((w.querySelector('.feed-info') || {}).innerText || '').trim().slice(0, 60),
-        time: ((w.querySelector('.feed-time') || {}).innerText || '').trim()
+        time: ((w.querySelector('.feed-time') || {}).innerText || '').trim(),
+        unread: ((w.querySelector('.unread-comment-number') || {}).innerText || '').trim()
       })).filter(w => w.name);
     })()`)) || [];
   }
