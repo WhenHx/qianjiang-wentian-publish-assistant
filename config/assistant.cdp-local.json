@@ -11,5 +11,20 @@
   "pollIntervalMs": 3000,
   "heartbeatIntervalMs": 15000,
   "downloadDir": "runtime/downloads-cdp",
-  "logDir": "runtime/logs-cdp"
+  "logDir": "runtime/logs-cdp",
+  "interaction": {
+    "enabled": true,
+    "autoSend": false,
+    "pollIntervalMs": 30000,
+    "platforms": {
+      "douyin": { "dm": true, "comment": false },
+      "shipinhao": { "dm": true, "comment": false }
+    },
+    "llm": {
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiKey": "${ENV:DASHSCOPE_API_KEY}",
+      "model": "kimi-k2.5",
+      "systemPrompt": "你是账号运营助手，用简洁友好的中文回复私信和评论。不知道就老实说，不要承诺无法兑现的事。回复控制在 80 字以内。"
+    }
+  }
 }

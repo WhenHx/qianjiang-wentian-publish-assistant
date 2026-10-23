@@ -40,8 +40,130 @@ class MockBackendStore {
     fs.mkdirSync(this.storageDir, { recursive: true });
     migrate(this.db, [
       { version: 1, up: db => this.createSchema(db) },
-      { version: 2, up: db => this.migrateV2(db) }
+      { version: 2, up: db => this.migrateV2(db) },
+      { version: 3, up: db => this.migrateV3(db) }
     ]);
+  }
+
+  migrateV3(db) {
+    db.exec(`
+CREATE TABLE interactions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  device_id TEXT NOT NULL REFERENCES devices(id),
+  platform TEXT NOT NULL,
+  account_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('dm','comment')),
+  peer_nickname TEXT NOT NULL,
+  message_json TEXT NOT NULL,
+  context_json TEXT NOT NULL DEFAULT '[]',
+  source_json TEXT NOT NULL DEFAULT '{}',
+  idempotency_key TEXT NOT NULL UNIQUE,
+  reply_status TEXT NOT NULL DEFAULT 'pending' CHECK(reply_status IN ('ready','pending','none')),
+  reply_text TEXT,
+  outcome TEXT CHECK(outcome IN ('sent','failed','waiting_user','discarded')),
+  result_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_interactions_user ON interactions(user_id);
+CREATE TABLE leads (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  device_id TEXT NOT NULL REFERENCES devices(id),
+  platform TEXT NOT NULL,
+  account_key TEXT NOT NULL,
+  peer_json TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  contact_type TEXT NOT NULL CHECK(contact_type IN ('wechat','phone')),
+  contact_value TEXT NOT NULL,
+  raw_message TEXT NOT NULL,
+  source_json TEXT NOT NULL DEFAULT '{}',
+  captured_at TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_leads_user ON leads(user_id);
+`);
+  }
+
+  createInteraction({ userId, deviceId, platform, accountKey, kind, peerNickname, message, context, source, idempotencyKey, replyStatus, replyText }) {
+    const existing = this.db.prepare('SELECT * FROM interactions WHERE idempotency_key=?').get(idempotencyKey);
+    if (existing) return { interaction: this.toInteraction(existing), idempotentReplay: true };
+    const id = randomId('int');
+    const now = nowIso();
+    this.db.prepare(`INSERT INTO interactions (id,user_id,device_id,platform,account_key,kind,peer_nickname,message_json,context_json,source_json,idempotency_key,reply_status,reply_text,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, userId, deviceId, platform, accountKey, kind, peerNickname, json(message), json(context || []), json(source || {}), idempotencyKey, replyStatus, replyText, now, now);
+    return { interaction: this.getInteraction(id), idempotentReplay: false };
+  }
+
+  getInteraction(id) {
+    const row = this.db.prepare('SELECT * FROM interactions WHERE id=?').get(id);
+    return row ? this.toInteraction(row) : null;
+  }
+
+  toInteraction(row) {
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      device_id: row.device_id,
+      platform: row.platform,
+      account_key: row.account_key,
+      kind: row.kind,
+      peer_nickname: row.peer_nickname,
+      message: parseJson(row.message_json, {}),
+      context: parseJson(row.context_json, []),
+      source: parseJson(row.source_json, {}),
+      reply_status: row.reply_status,
+      reply_text: row.reply_text,
+      outcome: row.outcome,
+      result: parseJson(row.result_json, null),
+      created_at: row.created_at
+    };
+  }
+
+  setInteractionResult({ id, device, outcome, evidence, error }) {
+    const row = this.db.prepare('SELECT * FROM interactions WHERE id=?').get(id);
+    if (!row || row.device_id !== device.id) return { ok: false, status: 404, code: 'interaction_not_found', message: '互动不存在或不属于本设备' };
+    if (row.outcome) return { ok: true, already: true, outcome: row.outcome };
+    this.db.prepare('UPDATE interactions SET outcome=?, result_json=?, updated_at=? WHERE id=?')
+      .run(outcome, json({ evidence: evidence || {}, error: error || null }), nowIso(), id);
+    return { ok: true, already: false, outcome };
+  }
+
+  createLead({ userId, deviceId, platform, accountKey, peer, channel, contactType, contactValue, rawMessage, source, capturedAt, idempotencyKey }) {
+    const existing = this.db.prepare('SELECT * FROM leads WHERE idempotency_key=?').get(idempotencyKey);
+    if (existing) return { lead: this.toLead(existing), idempotentReplay: true };
+    const id = randomId('lead');
+    this.db.prepare(`INSERT INTO leads (id,user_id,device_id,platform,account_key,peer_json,channel,contact_type,contact_value,raw_message,source_json,captured_at,idempotency_key,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, userId, deviceId, platform, accountKey, json(peer || {}), channel, contactType, contactValue, rawMessage, json(source || {}), capturedAt, idempotencyKey, nowIso());
+    return { lead: this.toLead(this.db.prepare('SELECT * FROM leads WHERE id=?').get(id)), idempotentReplay: false };
+  }
+
+  toLead(row) {
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      platform: row.platform,
+      account_key: row.account_key,
+      peer: parseJson(row.peer_json, {}),
+      channel: row.channel,
+      contact: { type: row.contact_type, value: row.contact_value },
+      raw_message: row.raw_message,
+      source: parseJson(row.source_json, {}),
+      captured_at: row.captured_at,
+      created_at: row.created_at
+    };
+  }
+
+  listLeadsForUser(userId) {
+    return this.db.prepare('SELECT * FROM leads WHERE user_id=? ORDER BY created_at DESC').all(userId).map(row => this.toLead(row));
+  }
+
+  listInteractionsForUser(userId) {
+    return this.db.prepare('SELECT * FROM interactions WHERE user_id=? ORDER BY created_at DESC').all(userId).map(row => this.toInteraction(row));
   }
 
   migrateV2(db) {

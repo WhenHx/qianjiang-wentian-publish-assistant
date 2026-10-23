@@ -40,8 +40,86 @@ class LocalStore {
     migrate(this.db, [
       { version: 1, up: db => this.createSchema(db) },
       { version: 2, up: db => this.migrateSubjectKeys(db) },
-      { version: 3, up: db => this.migrateOutbox(db) }
+      { version: 3, up: db => this.migrateOutbox(db) },
+      { version: 4, up: db => this.migrateInteractions(db) },
+      { version: 5, up: db => this.migrateInteractionCloudId(db) }
     ]);
+  }
+
+  migrateInteractionCloudId(db) {
+    db.exec(`ALTER TABLE interactions ADD COLUMN cloud_id TEXT;`);
+  }
+
+  migrateInteractions(db) {
+    db.exec(`
+CREATE TABLE interactions (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  peer TEXT NOT NULL,
+  incoming_text TEXT NOT NULL,
+  context_json TEXT NOT NULL DEFAULT '[]',
+  draft TEXT,
+  status TEXT NOT NULL CHECK(status IN ('draft_pending','sent','discarded','failed')),
+  dedup_hash TEXT NOT NULL UNIQUE,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_interactions_status ON interactions(status);
+`);
+  }
+
+  insertInteraction({ id, platform, kind, peer, incomingText, context = [], draft = null, dedupHash, cloudId = null }) {
+    const now = nowIso();
+    this.db.prepare(`INSERT INTO interactions (id,platform,kind,peer,incoming_text,context_json,draft,status,dedup_hash,cloud_id,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,'draft_pending',?,?,?,?)
+      ON CONFLICT(dedup_hash) DO NOTHING`)
+      .run(id, platform, kind, peer, incomingText, json(context), draft, dedupHash, cloudId, now, now);
+    return this.db.prepare('SELECT * FROM interactions WHERE dedup_hash=?').get(dedupHash);
+  }
+
+  getInteraction(id) {
+    const row = this.db.prepare('SELECT * FROM interactions WHERE id=?').get(id);
+    return row ? this.toInteraction(row) : null;
+  }
+
+  getInteractionByHash(dedupHash) {
+    const row = this.db.prepare('SELECT * FROM interactions WHERE dedup_hash=?').get(dedupHash);
+    return row ? this.toInteraction(row) : null;
+  }
+
+  listInteractions({ status } = {}) {
+    const rows = status
+      ? this.db.prepare('SELECT * FROM interactions WHERE status=? ORDER BY created_at DESC LIMIT 200').all(status)
+      : this.db.prepare('SELECT * FROM interactions ORDER BY created_at DESC LIMIT 200').all();
+    return rows.map(row => this.toInteraction(row));
+  }
+
+  updateInteraction(id, { draft, status, error, cloudId }) {
+    const row = this.db.prepare('SELECT * FROM interactions WHERE id=?').get(id);
+    if (!row) return null;
+    this.db.prepare('UPDATE interactions SET draft=?, status=?, error_json=?, cloud_id=?, updated_at=? WHERE id=?')
+      .run(draft !== undefined ? draft : row.draft, status || row.status, error !== undefined ? json(error) : row.error_json, cloudId !== undefined ? cloudId : row.cloud_id, nowIso(), id);
+    return this.getInteraction(id);
+  }
+
+  toInteraction(row) {
+    return {
+      id: row.id,
+      platform: row.platform,
+      kind: row.kind,
+      peer: row.peer,
+      incomingText: row.incoming_text,
+      context: parseJson(row.context_json, []),
+      draft: row.draft,
+      status: row.status,
+      dedupHash: row.dedup_hash,
+      cloudId: row.cloud_id || null,
+      error: parseJson(row.error_json, null),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
   }
 
   migrateOutbox(db) {

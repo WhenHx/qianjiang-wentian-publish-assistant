@@ -179,6 +179,91 @@ class MockBackendServer {
         return sendJson(res, 200, result);
       }
 
+      // ---- 契约 v3：平台互动（评论/私信）与留微线索 ----
+      if (pathname === '/api/v1/interactions' && req.method === 'POST') {
+        const device = this.requireDevice(req);
+        const body = await readJsonBody(req);
+        const kind = requireString(body.kind, 'kind', { max: 20 });
+        if (!['dm', 'comment'].includes(kind)) throw badRequest('kind 必须是 dm 或 comment');
+        const message = body.message && typeof body.message === 'object' ? body.message : {};
+        const content = requireString(message.content, 'message.content', { max: 4000 });
+        const peer = body.peer && typeof body.peer === 'object' ? body.peer : {};
+        // 模拟问天的知识库/AI 回复生成：无意义内容不回，其余给模板回复
+        const noReply = /^(在吗|在么|\?|？|哦|嗯|啊)$/i.test(content.trim()) || content.trim().length < 2;
+        const replyText = noReply ? null : `您好，感谢您的咨询。我是智能顾问，已收到您关于「${content.slice(0, 20)}」的消息，我们会尽快为您解答。`;
+        const result = this.store.createInteraction({
+          userId: device.user_id,
+          deviceId: device.id,
+          platform: requireString(body.platform, 'platform', { max: 40 }),
+          accountKey: requireString(body.account_key, 'account_key', { max: 160 }),
+          kind,
+          peerNickname: requireString(peer.nickname, 'peer.nickname', { max: 160 }),
+          message: { external_id: optionalString(message.external_id, 'message.external_id', { max: 160 }), direction: 'in', content, sent_at: optionalString(message.sent_at, 'message.sent_at', { max: 40 }) },
+          context: Array.isArray(body.context) ? body.context.slice(-10) : [],
+          source: body.source && typeof body.source === 'object' ? body.source : {},
+          idempotencyKey: requireString(body.idempotency_key, 'idempotency_key', { max: 160 }),
+          replyStatus: noReply ? 'none' : 'ready',
+          replyText
+        });
+        return sendJson(res, result.idempotentReplay ? 200 : 201, {
+          interaction_id: result.interaction.id,
+          idempotent_replay: result.idempotentReplay,
+          reply: { status: result.interaction.reply_status, text: result.interaction.reply_text }
+        });
+      }
+
+      vm = pathname.match(/^\/api\/v1\/interactions\/([^/]+)$/);
+      if (vm && req.method === 'GET') {
+        const device = this.requireDevice(req);
+        const row = this.store.getInteraction(decodeURIComponent(vm[1]));
+        if (!row || row.device_id !== device.id) throw notFound('互动不存在');
+        return sendJson(res, 200, { interaction_id: row.id, reply: { status: row.reply_status, text: row.reply_text } });
+      }
+
+      vm = pathname.match(/^\/api\/v1\/interactions\/([^/]+)\/result$/);
+      if (vm && req.method === 'POST') {
+        const device = this.requireDevice(req);
+        const body = await readJsonBody(req);
+        const outcome = requireString(body.outcome, 'outcome', { max: 20 });
+        if (!['sent', 'failed', 'waiting_user', 'discarded'].includes(outcome)) throw badRequest('outcome 取值非法');
+        const result = this.store.setInteractionResult({ id: decodeURIComponent(vm[1]), device, outcome, evidence: body.evidence, error: body.error });
+        if (!result.ok) return sendJson(res, result.status, { error: { code: result.code, message: result.message } });
+        return sendJson(res, 200, { ok: true, outcome: result.outcome, already_reported: result.already });
+      }
+
+      if (pathname === '/api/v1/interactions' && req.method === 'GET') {
+        const user = this.requireUser(req);
+        return sendJson(res, 200, { interactions: this.store.listInteractionsForUser(user.id) });
+      }
+
+      if (pathname === '/api/v1/leads' && req.method === 'POST') {
+        const device = this.requireDevice(req);
+        const body = await readJsonBody(req);
+        const contact = body.contact && typeof body.contact === 'object' ? body.contact : {};
+        const contactType = requireString(contact.type, 'contact.type', { max: 20 });
+        if (!['wechat', 'phone'].includes(contactType)) throw badRequest('contact.type 必须是 wechat 或 phone');
+        const result = this.store.createLead({
+          userId: device.user_id,
+          deviceId: device.id,
+          platform: requireString(body.platform, 'platform', { max: 40 }),
+          accountKey: requireString(body.account_key, 'account_key', { max: 160 }),
+          peer: body.peer && typeof body.peer === 'object' ? body.peer : {},
+          channel: requireString(body.channel, 'channel', { max: 40 }),
+          contactType,
+          contactValue: requireString(contact.value, 'contact.value', { max: 160 }),
+          rawMessage: requireString(body.raw_message, 'raw_message', { max: 4000 }),
+          source: body.source && typeof body.source === 'object' ? body.source : {},
+          capturedAt: requireString(body.captured_at, 'captured_at', { max: 40 }),
+          idempotencyKey: requireString(body.idempotency_key, 'idempotency_key', { max: 160 })
+        });
+        return sendJson(res, result.idempotentReplay ? 200 : 201, { lead: result.lead, idempotent_replay: result.idempotentReplay });
+      }
+
+      if (pathname === '/api/v1/leads' && req.method === 'GET') {
+        const user = this.requireUser(req);
+        return sendJson(res, 200, { leads: this.store.listLeadsForUser(user.id) });
+      }
+
       if (pathname === '/api/v1/bindings' && req.method === 'POST') {
         const body = await readJsonBody(req);
         const deviceName = requireString(body.device_name, 'device_name', { max: 120 });

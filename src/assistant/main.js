@@ -57,6 +57,8 @@ class AssistantApp {
       logger: this.logger
     });
     this.worker = new AssistantWorker({ config, store: this.store, cloud: this.cloud, logger: this.logger });
+    const { InteractionManager } = require('./interaction/manager');
+    this.interactions = new InteractionManager({ config, store: this.store, cloud: this.cloud, logger: this.logger });
     this.openLoginBrowsers = new Map();
     this.worker.loginBrowsers = this.openLoginBrowsers;
     this.pendingBinding = null;
@@ -107,12 +109,14 @@ class AssistantApp {
       this.worker.start();
       this.startHeartbeat();
     }
+    this.interactions.start().catch(error => this.logger.warn('互动模块启动失败', { error: error.message }));
     this.logger.info('助手核心已启动', { mode: this.config.mode, service: this.config.serviceUrl });
   }
 
   stop() {
     clearInterval(this.heartbeatTimer);
     this.worker.stop();
+    this.interactions.stop().catch(() => {});
     this.server.close();
     if (this.lockPath) { try { fs.rmSync(this.lockPath, { force: true }); } catch {} }
   }
@@ -361,6 +365,35 @@ class AssistantApp {
       if (pathname === '/local/v1/worker/resume' && req.method === 'POST') {
         this.worker.paused = false;
         return sendJson(res, 200, { ok: true, paused: false });
+      }
+
+      // ---- 互动回复（私信/评论草稿队列） ----
+      if (pathname === '/local/v1/interactions' && req.method === 'GET') {
+        const status = url.searchParams.get('status') || undefined;
+        return sendJson(res, 200, { interactions: this.store.listInteractions({ status }), enabled: this.interactions.enabled, auto_send: !!this.interactions.interactionCfg.autoSend });
+      }
+
+      if (pathname === '/local/v1/interactions/poll' && req.method === 'POST') {
+        const result = await this.interactions.pollOnce();
+        return sendJson(res, 200, result);
+      }
+
+      let im = pathname.match(/^\/local\/v1\/interactions\/([^/]+)\/send$/);
+      if (im && req.method === 'POST') {
+        const row = await this.interactions.sendInteraction(im[1]);
+        return sendJson(res, 200, { interaction: row });
+      }
+
+      im = pathname.match(/^\/local\/v1\/interactions\/([^/]+)\/discard$/);
+      if (im && req.method === 'POST') {
+        return sendJson(res, 200, { interaction: this.interactions.discardInteraction(im[1]) });
+      }
+
+      im = pathname.match(/^\/local\/v1\/interactions\/([^/]+)\/draft$/);
+      if (im && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        const draft = requireString(body.draft, 'draft');
+        return sendJson(res, 200, { interaction: this.store.updateInteraction(im[1], { draft }) });
       }
 
       if (pathname === '/local/v1/settings' && req.method === 'GET') {

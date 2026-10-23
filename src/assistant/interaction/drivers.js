@@ -1,0 +1,270 @@
+// 互动回复的页面驱动：在已登录平台页面上读取私信/评论并发送回复。
+// 选择器来自 2026-10 真机校准（见 acceptance/探测-私信入口/）：
+// - 抖音私信：完整校准（会话列表/气泡/输入框）
+// - 抖音评论：发送链路已校准；评论条目「回复」按钮待真实评论数据校准
+// - 视频号：评论作品列表已校准（wujie iframe 穿透）；私信会话/评论条目待真实数据校准
+// 未校准路径一律安全失败（抛错由上层记日志），不会误操作。
+const { sleep } = require('../../common/retry');
+
+async function evaluate(page, expression) {
+  const r = await page.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+  if (r.exceptionDetails) throw new Error(`页面脚本异常: ${JSON.stringify(r.exceptionDetails).slice(0, 200)}`);
+  return r.result?.value;
+}
+
+async function clickAt(page, x, y) {
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await sleep(80);
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await sleep(80);
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+}
+
+async function clickText(page, text, { maxY = 99999 } = {}) {
+  const pos = await evaluate(page, `(() => {
+    const el = [...document.querySelectorAll('li,div,span,p,a')].find(e => {
+      const t = (e.innerText || '').trim();
+      if (t !== ${JSON.stringify(text)}) return false;
+      const r = e.getBoundingClientRect();
+      return r.y < ${maxY} && r.width > 0;
+    });
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  })()`);
+  if (!pos) throw new Error(`找不到可点击文本: ${text}`);
+  await clickAt(page, pos.x, pos.y);
+}
+
+// 名字元素可能连带时间文本（"WhenHx\n09/16" 或 "WhenHx刚刚"），剥掉尾部时间
+function normalizeName(text) {
+  return (text || '').split('\n')[0]
+    .replace(/(刚刚|昨天|今[天日]|\d+分钟前|\d+小时前|\d+天前|周[一二三四五六日]|\d{2}\/\d{2}|\d{1,2}:\d{2}|\d{4}\/\d{2}\/\d{2})+$/u, '')
+    .trim();
+}
+
+// ---------- 抖音私信（2026-10-19 真机校准） ----------
+
+class DouyinDmDriver {
+  constructor(page) {
+    this.page = page;
+  }
+
+  async openPanel() {
+    await evaluate(this.page, `location.href = 'https://www.douyin.com/'`);
+    await sleep(6000);
+    await clickText(this.page, '消息', { maxY: 60 });
+    await sleep(4000);
+    // 归一到会话列表视图：若停在聊天视图，点左上角返回箭头；若面板没开，再点一次「消息」
+    for (let i = 0; i < 3; i++) {
+      const hasList = await evaluate(this.page, `!!document.querySelector('[class*=conversationConversationListwrapper]')`);
+      if (hasList) return;
+      const inChat = await evaluate(this.page, `!!document.querySelector('[contenteditable=true][class*=messageEditorinputArea]')`);
+      if (inChat) {
+        // 返回箭头是聊天面板左上角的 svg；限定在右侧面板区域内，排除页面左上角的抖音 logo
+        const back = await evaluate(this.page, `(() => {
+          const minX = window.innerWidth - 480;
+          const svgs = [...document.querySelectorAll('svg')].filter(e => { const r = e.getBoundingClientRect(); return r.y < 110 && r.x > minX && r.width > 0 && r.width < 50; });
+          if (!svgs.length) return null;
+          svgs.sort((a, b) => a.getBoundingClientRect().x - b.getBoundingClientRect().x);
+          const r = svgs[0].getBoundingClientRect();
+          return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+        })()`);
+        if (back) await clickAt(this.page, back.x, back.y);
+        await sleep(2500);
+      } else {
+        await clickText(this.page, '消息', { maxY: 60 });
+        await sleep(3000);
+      }
+    }
+    throw new Error('消息面板未能进入会话列表视图');
+  }
+
+  async listConversations() {
+    // 列表渲染可能滞后于面板打开，最多等 10 秒；条目必须有可见尺寸（面板关闭时 rect 为 0）
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const list = (await evaluate(this.page, `[...document.querySelectorAll('[class*=conversationConversationItemwrapper]')]
+        .map(w => {
+          const r = w.getBoundingClientRect();
+          return {
+            name: (w.querySelector('[class*=conversationConversationItemtitle]') || {}).innerText || '',
+            preview: (w.querySelector('[class*=ConversationItemHinttextBox]') || {}).innerText || '',
+            time: (w.querySelector('[class*=ConversationItemTagNextToTitletimeStr]') || {}).innerText || '',
+            w: r.width, h: r.height
+          };
+        })
+        .filter(c => c.name.trim() && c.w > 0)`)) || [];
+      if (list.length) return list.map(c => ({ name: normalizeName(c.name), preview: c.preview, time: c.time }));
+      await sleep(1000);
+    }
+    return [];
+  }
+
+  async openConversation(name) {
+    // 列表渲染可能滞后，定位条目最多等 10 秒；条目必须有可见尺寸
+    let pos = null;
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && !pos) {
+      pos = await evaluate(this.page, `(() => {
+        const items = [...document.querySelectorAll('[class*=conversationConversationItemwrapper]')];
+        const norm = t => (t || '').split('\\n')[0].replace(/(刚刚|昨天|今[天日]|\\d+分钟前|\\d+小时前|\\d+天前|周[一二三四五六日]|\\d{2}\\/\\d{2}|\\d{1,2}:\\d{2}|\\d{4}\\/\\d{2}\\/\\d{2})+$/u, '').trim();
+        const item = items.find(w => {
+          const r = w.getBoundingClientRect();
+          if (r.width === 0) return false;
+          return norm((w.querySelector('[class*=conversationConversationItemtitle]') || {}).innerText || '') === ${JSON.stringify(name)};
+        });
+        if (!item) return null;
+        const r = item.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      })()`);
+      if (!pos) await sleep(1000);
+    }
+    if (!pos) throw new Error(`会话不存在: ${name}`);
+    // 点击可能不生效（MMUI 自绘列表），点开以输入框出现为准，最多重试 2 次
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await clickAt(this.page, pos.x, pos.y);
+      await sleep(5000);
+      const opened = await evaluate(this.page, `!!document.querySelector('[contenteditable=true][class*=messageEditorinputArea]')`);
+      if (opened) return;
+    }
+    throw new Error(`会话点击未生效: ${name}`);
+  }
+
+  // 会话一致性校验：聊天区最近几条气泡应包含列表预览的消息（预览可能截断），否则说明开错了会话
+  // 气泡渲染可能较慢，最多等 12 秒
+  async verifyConversation(preview) {
+    const core = (preview || '').replace(/[…\s]+$/u, '').trim();
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      const recent = await this.readRecentTexts(4);
+      if (recent.length) {
+        if (!core || core.startsWith('[')) return true; // 非文本预览无法校验，放行
+        return recent.some(t => t.startsWith(core.slice(0, 12)) || core.startsWith(t.slice(0, 12)));
+      }
+      await sleep(1500);
+    }
+    throw new Error('会话打开校验失败：聊天区无消息');
+  }
+
+  // 读取气泡文本（首尾各 n 条，DOM 顺序不稳定）
+  async readRecentTexts(n = 4) {
+    return (await evaluate(this.page, `(() => {
+      const all = [...document.querySelectorAll('[class*=TextMessageTextpureText]')].map(b => (b.innerText || '').trim()).filter(Boolean);
+      return [...new Set([...all.slice(0, ${n}), ...all.slice(-${n})])];
+    })()`)) || [];
+  }
+
+  async readMessages() {
+    return (await evaluate(this.page, `[...document.querySelectorAll('[class*=messageMessageBoxmessageBox]')]
+      .map(b => ({
+        fromMe: /isFromMe/.test((b.className || '').toString()) || !!b.querySelector('[class*=isFromMe]'),
+        text: ((b.querySelector('[class*=TextMessageTextpureText]') || {}).innerText || '').trim()
+      }))
+      .filter(m => m.text)`)) || [];
+  }
+
+  async sendMessage(text) {
+    const has = await evaluate(this.page, `!!document.querySelector('[contenteditable=true][class*=messageEditorinputArea]')`);
+    if (!has) throw new Error('找不到私信输入框（会话可能未打开）');
+    await evaluate(this.page, `document.querySelector('[contenteditable=true][class*=messageEditorinputArea]').focus()`);
+    await sleep(300);
+    await this.page.send('Input.insertText', { text });
+    await sleep(500);
+    // 回车发送
+    await this.page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await this.page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await sleep(2500);
+    // 发送验证：最近两条气泡（DOM 顺序不稳定，首尾各查）存在已方且内容匹配的即视为发出
+    const verified = await evaluate(this.page, `(() => {
+      const boxes = [...document.querySelectorAll('[class*=messageMessageBoxmessageBox]')];
+      if (!boxes.length) return false;
+      const cands = [...new Set([...boxes.slice(0, 2), ...boxes.slice(-2)])];
+      return cands.some(last => {
+        const fromMe = /isFromMe/.test((last.className || '').toString()) || !!last.querySelector('[class*=isFromMe]');
+        const t = ((last.querySelector('[class*=TextMessageTextpureText]') || {}).innerText || '').trim();
+        return fromMe && t.length > 0 && ${JSON.stringify(text)}.slice(0, 20).startsWith(t.slice(0, 10));
+      });
+    })()`);
+    if (!verified) {
+      // 清掉输入框里可能残留的文字，避免下次误发
+      try {
+        await evaluate(this.page, `(() => { const i = document.querySelector('[contenteditable=true][class*=messageEditorinputArea]'); if (i) { i.focus(); i.innerHTML = ''; } })()`);
+      } catch {}
+      throw new Error('发送验证失败：最后一条气泡不是刚发送的内容，按未发出处理');
+    }
+  }
+}
+
+// ---------- 视频号私信/评论（wujie iframe，会话/评论条目待真实数据校准） ----------
+
+const SPH_IFRAME_PIERCE = `(function findDoc() {
+  for (const f of document.querySelectorAll('iframe')) {
+    try { if (f.contentDocument && f.contentDocument.body) return f.contentDocument; } catch (e) {}
+  }
+  return null;
+})()`;
+
+class ShipinhaoDriver {
+  constructor(page) {
+    this.page = page;
+  }
+
+  async openDmPage() {
+    await evaluate(this.page, `location.href = 'https://channels.weixin.qq.com/platform/private_msg'`);
+    await sleep(8000);
+  }
+
+  async openCommentPage() {
+    await evaluate(this.page, `location.href = 'https://channels.weixin.qq.com/platform/interaction/comment'`);
+    await sleep(8000);
+  }
+
+  async listConversations() {
+    // 会话列表在 iframe 的 .finder-list-wrap 内；条目类名待真实数据校准
+    return (await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return [];
+      const wrap = doc.querySelector('.finder-list-wrap');
+      if (!wrap) return [];
+      return [...wrap.querySelectorAll('[class*=item],[class*=Item],li')]
+        .map(e => ({ name: (e.innerText || '').trim().slice(0, 40), preview: '', time: '' }))
+        .filter(c => c.name && c.name.length < 40);
+    })()`)) || [];
+  }
+
+  async listCommentWorks() {
+    return (await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return [];
+      return [...doc.querySelectorAll('.comment-feed-wrap')].map(w => ({
+        name: ((w.querySelector('.feed-info') || {}).innerText || '').trim().slice(0, 60),
+        time: ((w.querySelector('.feed-time') || {}).innerText || '').trim()
+      })).filter(w => w.name);
+    })()`)) || [];
+  }
+}
+
+// ---------- 抖音评论（发送已校准；条目回复待真实评论数据） ----------
+
+class DouyinCommentDriver {
+  constructor(page) {
+    this.page = page;
+  }
+
+  async openCommentPage() {
+    await evaluate(this.page, `location.href = 'https://creator.douyin.com/creator-micro/interactive/comment'`);
+    await sleep(8000);
+  }
+
+  async listComments() {
+    // 评论条目结构待真实评论数据校准；当前返回空
+    return (await evaluate(this.page, `(() => {
+      const area = document.querySelector('[class*=creator-comment]');
+      if (!area) return [];
+      return [];
+    })()`)) || [];
+  }
+}
+
+module.exports = { DouyinDmDriver, ShipinhaoDriver, DouyinCommentDriver, evaluate, clickAt, clickText };
