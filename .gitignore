@@ -9,3 +9,5 @@ services/wechat-bot/config.json
 services/wechat-bot/bot.log
 services/wechat-bot/friend_state.json
 __pycache__/
+services/douyin-spider/.venv/
+services/douyin-spider/**/__pycache__/

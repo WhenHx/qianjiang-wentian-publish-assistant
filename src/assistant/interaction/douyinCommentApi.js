@@ -3,8 +3,16 @@
 // 该路径仅做"读"；写（回复）仍走视频页 UI（已真机验证）。
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const fs = require('node:fs');
 
-const READER_SCRIPT = path.join(__dirname, '..', '..', '..', 'scripts', 'dy-comment-reader.py');
+const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+const READER_SCRIPT = path.join(REPO_ROOT, 'scripts', 'dy-comment-reader.py');
+
+// 相对路径一律按仓库根目录解析（config 里写 services/douyin-spider 即可）
+function resolveRepo(p) {
+  if (!p) return p;
+  return path.isAbsolute(p) ? p : path.join(REPO_ROOT, p);
+}
 
 async function exportDouyinCookie(page) {
   await page.send('Network.enable').catch(() => {});
@@ -15,9 +23,12 @@ async function exportDouyinCookie(page) {
 }
 
 function runReader(pythonPath, spiderDir, cookie) {
+  const resolvedPython = resolveRepo(pythonPath);
+  const resolvedDir = resolveRepo(spiderDir);
+  if (!fs.existsSync(resolvedPython)) return Promise.reject(new Error(`dyspider Python 不存在: ${resolvedPython}（先在 services/douyin-spider 建 .venv 并装依赖）`));
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonPath, [READER_SCRIPT], {
-      env: { ...process.env, DYSPI_DIR: spiderDir, PYTHONIOENCODING: 'utf-8' },
+    const child = spawn(resolvedPython, [READER_SCRIPT], {
+      env: { ...process.env, DYSPI_DIR: resolvedDir, PYTHONIOENCODING: 'utf-8' },
       timeout: 180000
     });
     let stdout = '';
@@ -30,7 +41,7 @@ function runReader(pythonPath, spiderDir, cookie) {
       try {
         const data = JSON.parse(stdout);
         if (data.error) return reject(new Error(data.error));
-        resolve(data.works || []);
+        resolve(data);
       } catch (e) {
         reject(new Error(`评论读取输出解析失败: ${e.message}`));
       }

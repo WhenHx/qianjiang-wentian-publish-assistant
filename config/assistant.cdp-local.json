@@ -21,8 +21,8 @@
       "shipinhao": { "dm": true, "comment": true }
     },
     "dyspider": {
-      "dir": "E:/问天/douyin-spider",
-      "python": "E:/问天/douyin-spider/.venv/Scripts/python.exe"
+      "dir": "services/douyin-spider",
+      "python": "services/douyin-spider/.venv/Scripts/python.exe"
     },
     "llm": {
       "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",

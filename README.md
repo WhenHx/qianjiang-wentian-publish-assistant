@@ -45,7 +45,7 @@ cd services/wechat-bot
 
 - 默认 `autoSend: false`：检测到的评论/私信先进入本地待发送队列，人工确认后才真实发送。
 - 回复内容由问天（或模拟后端）生成，助手不本地生成客户回复（本地 LLM 仅为显式降级开关，默认关）。
-- 抖音评论检测依赖外部组件 [DouYin_Spider](https://github.com/cv-cat/DouYin_Spider)（仅读取路径，cookie 从已登录浏览器自动导出），配置在 `config/assistant.cdp-local.json` 的 `interaction.dyspider`。该组件为第三方开源项目，仅供学习与技术研究使用。
+- 抖音评论检测依赖内置组件 [DouYin_Spider](https://github.com/cv-cat/DouYin_Spider)（已 vendor 在 `services/douyin-spider/`，仅读取路径，cookie 从已登录浏览器自动导出）。该组件为第三方开源项目，版权归原作者所有，按其声明仅供学习与技术研究使用。首次使用前需在 `services/douyin-spider/` 下建 Python 3.12 虚拟环境并安装依赖（见 `services/douyin-spider/requirements.txt`）。
 - 本地接口：`GET /local/v1/interactions`（队列）、`POST /local/v1/interactions/:id/send`（确认发送）、`POST /local/v1/interactions/:id/discard`（作废）。
 
 ## 重要限制
