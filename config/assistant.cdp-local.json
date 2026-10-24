@@ -17,8 +17,12 @@
     "autoSend": false,
     "pollIntervalMs": 30000,
     "platforms": {
-      "douyin": { "dm": true, "comment": false },
+      "douyin": { "dm": true, "comment": true },
       "shipinhao": { "dm": true, "comment": true }
+    },
+    "dyspider": {
+      "dir": "E:/问天/douyin-spider",
+      "python": "E:/问天/douyin-spider/.venv/Scripts/python.exe"
     },
     "llm": {
       "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",

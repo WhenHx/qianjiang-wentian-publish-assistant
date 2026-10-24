@@ -331,7 +331,7 @@ class ShipinhaoDriver {
   }
 
   // 打开有评论的作品（评论数 > 0 优先）
-  // 打开有评论的作品（评论数 > 0 优先），返回作品名；没有则 false
+  // 打开有评论的作品（评论数 > 0 优先），返回作品标识（发布时间，稳定）；没有则 false
   async openWorkWithComments() {
     return (await evaluate(this.page, `(() => {
       const doc = ${SPH_IFRAME_PIERCE};
@@ -340,7 +340,9 @@ class ShipinhaoDriver {
       const target = items.find(w => { const t = ((w.querySelector('.feed-comment-total') || {}).innerText || '').trim(); return parseInt(t, 10) > 0; });
       if (!target) return false;
       target.click();
-      return ((target.querySelector('.feed-info') || {}).innerText || '').trim().slice(0, 60) || true;
+      // 作品名会带评论数后缀（"2026/10/21 18:07\\n1"），去掉数字尾巴保持稳定
+      const raw = ((target.querySelector('.feed-info') || {}).innerText || '').trim();
+      return raw.replace(/\\n\\d+$/u, '').slice(0, 60) || true;
     })()`)) || false;
   }
 
@@ -350,7 +352,7 @@ class ShipinhaoDriver {
       const doc = ${SPH_IFRAME_PIERCE};
       if (!doc) return false;
       const items = [...doc.querySelectorAll('.comment-feed-wrap')];
-      const target = items.find(w => ((w.querySelector('.feed-info') || {}).innerText || '').trim().includes(${JSON.stringify(name.slice(0, 20))}));
+      const target = items.find(w => ((w.querySelector('.feed-info') || {}).innerText || '').trim().replace(/\\n\\d+$/u, '').includes(${JSON.stringify(name.slice(0, 20))}));
       if (!target) return false;
       target.click();
       return true;
@@ -359,16 +361,18 @@ class ShipinhaoDriver {
 
   async listComments() {
     // 条目叶子文本顺序：名字、时间(yyyy/MM/dd)、内容、操作词（点赞/回复/删除…），以时间锚定内容
+    // 排除作者自己的回复（带「作者」标记的条目）
     return (await evaluate(this.page, `(() => {
       const doc = ${SPH_IFRAME_PIERCE};
       if (!doc) return [];
       return [...doc.querySelectorAll('.comment-item')].map(item => {
         const texts = [...item.querySelectorAll('*')].filter(e => e.children.length === 0 && (e.innerText || '').trim()).map(e => (e.innerText || '').trim());
+        const isAuthorReply = texts.includes('作者');
         const timeIdx = texts.findIndex(t => /^\\d{4}\\/\\d{2}\\/\\d{2}/.test(t));
         const name = texts[0] || '';
         const text = timeIdx > 0 && texts[timeIdx + 1] ? texts[timeIdx + 1] : '';
-        return { name, text, time: timeIdx > 0 ? texts[timeIdx] : '' };
-      }).filter(c => c.name && c.text);
+        return { name, text, time: timeIdx > 0 ? texts[timeIdx] : '', isAuthorReply };
+      }).filter(c => c.name && c.text && !c.isAuthorReply);
     })()`)) || [];
   }
 
@@ -447,8 +451,6 @@ class ShipinhaoDriver {
   }
 }
 
-// ---------- 抖音评论（发送已校准；条目回复待真实评论数据） ----------
-
 class DouyinCommentDriver {
   constructor(page) {
     this.page = page;
@@ -459,13 +461,168 @@ class DouyinCommentDriver {
     await sleep(8000);
   }
 
-  async listComments() {
-    // 评论条目结构待真实评论数据校准；当前返回空
+  // 当前选中作品名（评论区顶部的作品卡）
+  async currentWorkName() {
     return (await evaluate(this.page, `(() => {
-      const area = document.querySelector('[class*=creator-comment]');
-      if (!area) return [];
-      return [];
+      const el = [...document.querySelectorAll('*')].find(e => e.children.length === 0 && /\\d{4}年\\d{2}月\\d{2}日/.test(e.innerText || ''));
+      return el ? (el.innerText || '').trim() : null;
+    })()`)) || null;
+  }
+
+  async listComments() {
+    // 评论条目：username-* 作者 + comment-content-text 内容 + time-* 时间
+    return (await evaluate(this.page, `(() => {
+      const items = [...document.querySelectorAll('[class*=comment-content-text]')];
+      return items.map(content => {
+        let item = content;
+        for (let i = 0; i < 6 && item.parentElement; i++) {
+          item = item.parentElement;
+          if (item.querySelector('[class*=username-]')) break;
+        }
+        return {
+          name: ((item.querySelector('[class*=username-]') || {}).innerText || '').trim(),
+          text: (content.innerText || '').trim(),
+          time: ((item.querySelector('[class*=time-]') || {}).innerText || '').trim()
+        };
+      }).filter(c => c.name && c.text);
     })()`)) || [];
+  }
+
+  async replyComment(peer, text) {
+    // 评论列表异步加载，定位目标评论最多等 12 秒
+    let opened = false;
+    const findDeadline = Date.now() + 12000;
+    while (Date.now() < findDeadline && !opened) {
+      opened = await evaluate(this.page, `(() => {
+        const items = [...document.querySelectorAll('[class*=comment-content-text]')];
+        const content = items.find(c => {
+          let item = c;
+          for (let i = 0; i < 6 && item.parentElement; i++) {
+            item = item.parentElement;
+            if (item.querySelector('[class*=username-]')) break;
+          }
+          return ((item.querySelector('[class*=username-]') || {}).innerText || '').trim() === ${JSON.stringify(peer)};
+        });
+        if (!content) return false;
+        let item = content;
+        for (let i = 0; i < 6 && item.parentElement; i++) {
+          item = item.parentElement;
+          if ([...item.querySelectorAll('[class*=item-]')].some(e => (e.innerText || '').trim() === '回复')) break;
+        }
+        const btn = [...item.querySelectorAll('[class*=item-], span, div')].find(e => (e.innerText || '').trim() === '回复' && e.children.length < 3);
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })()`);
+      if (!opened) await sleep(1500);
+    }
+    if (!opened) throw new Error(`找不到评论或回复入口: ${peer}`);
+    // 等回复框出现并校验目标（「回复 {peer}:」）
+    let boxReady = false;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      boxReady = await evaluate(this.page, `(() => {
+        const tas = [...document.querySelectorAll('textarea')];
+        return tas.some(ta => {
+          let c = ta;
+          for (let i = 0; i < 5 && c.parentElement; i++) c = c.parentElement;
+          return (c.innerText || '').includes(${JSON.stringify(`回复 ${peer}`)});
+        });
+      })()`);
+      if (boxReady) break;
+      await sleep(500);
+    }
+    if (!boxReady) throw new Error(`回复框未打开或目标校验失败：预期回复 ${peer}`);
+    // 事件方式填充回复框（条目内的 textarea）
+    await evaluate(this.page, `(() => {
+      const tas = [...document.querySelectorAll('textarea')];
+      const ta = tas.find(t => {
+        let c = t;
+        for (let i = 0; i < 5 && c.parentElement; i++) c = c.parentElement;
+        return (c.innerText || '').includes(${JSON.stringify(`回复 ${peer}`)});
+      });
+      if (!ta) return;
+      ta.focus();
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(ta, ${JSON.stringify(text)});
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await sleep(800);
+    // 点回复框容器内的「发送」
+    const sent = await evaluate(this.page, `(() => {
+      const tas = [...document.querySelectorAll('textarea')];
+      const ta = tas.find(t => {
+        let c = t;
+        for (let i = 0; i < 5 && c.parentElement; i++) c = c.parentElement;
+        return (c.innerText || '').includes(${JSON.stringify(`回复 ${peer}`)});
+      });
+      if (!ta) return false;
+      let c = ta;
+      for (let i = 0; i < 5 && c.parentElement; i++) c = c.parentElement;
+      const btn = [...c.querySelectorAll('button')].find(b => (b.innerText || '').trim() === '发送' && !b.disabled);
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    if (!sent) throw new Error('「发送」按钮不可用');
+    await sleep(3000);
+    // 验证：评论区出现刚发送的内容
+    const verified = await evaluate(this.page, `(document.body.innerText || '').includes(${JSON.stringify(text.slice(0, 15))})`);
+    if (!verified) throw new Error('回复验证失败：评论区未出现刚发送的内容');
+  }
+
+  // 视频页回复（真机验证通过的路径）：导航到视频页 → 滚动到评论 → 点回复 → 填充 → 回车 → 验证
+  async replyOnVideoPage(videoUrl, peer, commentText, text) {
+    await this.page.send('Page.navigate', { url: videoUrl });
+    await sleep(9000);
+    // 滚动到目标评论
+    const found = await evaluate(this.page, `(() => {
+      const el = [...document.querySelectorAll('*')].find(e => e.children.length === 0 && (e.innerText || '').trim() === ${JSON.stringify(commentText.slice(0, 30))});
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      return true;
+    })()`);
+    if (!found) throw new Error(`视频页找不到评论: ${commentText.slice(0, 20)}`);
+    await sleep(2500);
+    // 点该评论的「回复」（真实鼠标）
+    const pos = await evaluate(this.page, `(() => {
+      const el = [...document.querySelectorAll('*')].find(e => e.children.length === 0 && (e.innerText || '').trim() === ${JSON.stringify(commentText.slice(0, 30))});
+      if (!el) return null;
+      let item = el;
+      for (let i = 0; i < 8 && item.parentElement; i++) { item = item.parentElement; if ((item.innerText || '').includes('回复')) break; }
+      const btn = [...item.querySelectorAll('*')].find(e => (e.innerText || '').trim() === '回复' && e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().width < 80);
+      if (!btn) return null;
+      const r = btn.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    if (!pos) throw new Error('找不到评论的「回复」按钮');
+    await clickAt(this.page, pos.x, pos.y);
+    await sleep(3000);
+    // 校验回复框（回复@{peer}）
+    const boxOk = await evaluate(this.page, `(document.body.innerText || '').includes(${JSON.stringify(`回复@${peer}`)})`);
+    if (!boxOk) throw new Error(`回复框未打开或目标校验失败：预期回复 ${peer}`);
+    // 点进输入框填充（Draft.js contenteditable）
+    const inputPos = await evaluate(this.page, `(() => {
+      const el = [...document.querySelectorAll('[contenteditable=true]')].find(e => {
+        let c = e;
+        for (let i = 0; i < 6 && c.parentElement; i++) c = c.parentElement;
+        return (c.innerText || '').includes(${JSON.stringify(`回复@${peer}`)});
+      });
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.x + 100), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    if (!inputPos) throw new Error('找不到回复输入框');
+    await clickAt(this.page, inputPos.x, inputPos.y);
+    await sleep(500);
+    await this.page.send('Input.insertText', { text });
+    await sleep(800);
+    await this.page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await this.page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await sleep(4000);
+    // 验证：评论区出现刚发送的内容
+    const verified = await evaluate(this.page, `(document.body.innerText || '').includes(${JSON.stringify(text.slice(0, 15))})`);
+    if (!verified) throw new Error('回复验证失败：评论区未出现刚发送的内容');
   }
 }
 

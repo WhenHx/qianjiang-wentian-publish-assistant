@@ -71,10 +71,13 @@ class GroupManager:
         return None
 
     def _cancel_picker(self, picker):
-        cancel = picker.ButtonControl(Name="取消", searchDepth=10)
-        if cancel.Exists(1):
-            _real_click_ctrl(cancel)
-            time.sleep(0.5)
+        try:
+            cancel = picker.ButtonControl(Name="取消", searchDepth=10)
+            if cancel.Exists(1):
+                _real_click_ctrl(cancel)
+                time.sleep(0.5)
+        except Exception as e:
+            logger.warning("取消选择器失败（UIA 读取异常）: %s", e)
 
     def _select_contacts(self, picker, contacts):
         """在选择器里逐个搜索并勾选联系人，返回成功勾选的数量。"""
@@ -98,9 +101,12 @@ class GroupManager:
             _real_click_ctrl(row)
             time.sleep(0.5)
             ok += 1
-        _real_click_ctrl(search)
-        search.SendKeys("{Ctrl}a{Delete}", interval=0.02)
-        time.sleep(0.3)
+        try:
+            _real_click_ctrl(search)
+            search.SendKeys("{Ctrl}a{Delete}", interval=0.02)
+            time.sleep(0.3)
+        except Exception as e:
+            logger.warning("清空搜索框失败（不影响已选结果）: %s", e)
         return ok
 
     def _finish_picker(self, picker, expected, dry_run):
@@ -123,13 +129,20 @@ class GroupManager:
                 return
             for ch in children[:20]:
                 find_selected(ch, d + 1)
-        find_selected(picker)
+        try:
+            find_selected(picker)
+        except Exception as e:
+            logger.warning("读取已选数失败（跳过校验）: %s", e)
         logger.info("选择器状态: %s（预期 %d 人）", text or "未读到已选数", expected)
         if dry_run:
             self._cancel_picker(picker)
             return False, f"dry-run：已勾选，未点完成（{text or '已选数未读到'}）"
-        done = picker.ButtonControl(Name="完成", searchDepth=10)
-        if not done.Exists(1.5):
+        try:
+            done = picker.ButtonControl(Name="完成", searchDepth=10)
+            done_exists = done.Exists(1.5)
+        except Exception as e:
+            return False, f"定位「完成」按钮失败（选择器已保留，可手动点完成）: {e}"
+        if not done_exists:
             self._cancel_picker(picker)
             return False, "找不到「完成」按钮，已取消"
         _real_click_ctrl(done)

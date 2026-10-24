@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { ManagedBrowser } = require('../browser/cdpClient');
 const { LlmClient } = require('./llm');
 const { DouyinDmDriver, ShipinhaoDriver, DouyinCommentDriver } = require('./drivers');
+const { readDouyinComments } = require('./douyinCommentApi');
 const { randomId } = require('../../common/ids');
 const { sleep } = require('../../common/retry');
 
@@ -193,10 +194,26 @@ class InteractionManager {
     const page = await this.ensurePage(platform, 'comment');
     const results = { detected: 0, replied: 0, leads: 0 };
     if (platform === 'douyin') {
-      const driver = new DouyinCommentDriver(page);
-      await driver.openCommentPage();
-      await driver.listComments();
-      // 评论条目结构待真实评论数据校准
+      const dyspider = this.interactionCfg.dyspider || {};
+      const works = await readDouyinComments({ page, spiderDir: dyspider.dir, pythonPath: dyspider.python });
+      const myUid = works.myUid || '';
+      for (const work of works.works) {
+        for (const c of (work.comments || [])) {
+          if (myUid && c.uid === myUid) continue; // 跳过自己的评论
+          if (c.replied_by_author) continue;      // 作者已回复的不再处理
+          const hash = dedupHash(platform, 'comment', `cid:${c.cid}`, '');
+          if (this.store.getInteractionByHash(hash)) continue;
+          results.detected += 1;
+          const incoming = { fromMe: false, text: c.text };
+          const row = await this.uploadAndDraft({
+            platform, kind: 'comment', peer: c.nickname || c.uid || '未知用户', incoming,
+            messages: [incoming], hash, conversationKey: work.title || work.aweme_id, videoUrl: work.video_url
+          });
+          if (row && row.draft) results.replied += 1;
+          const lead = await this.maybeCreateLead({ platform, peer: c.nickname || c.uid, incoming, hash });
+          if (lead) results.leads += 1;
+        }
+      }
       return results;
     }
     if (platform === 'shipinhao') {
@@ -259,14 +276,14 @@ class InteractionManager {
   }
 
   // 上传问天拿回复（契约 v3）；回复 pending 时短轮询一次；问天不答且开启降级才用本地 LLM
-  async uploadAndDraft({ platform, kind, peer, incoming, messages, hash, conversationKey }) {
+  async uploadAndDraft({ platform, kind, peer, incoming, messages, hash, conversationKey, videoUrl }) {
     const row = this.store.insertInteraction({
       id: randomId('int'),
       platform, kind, peer,
       incomingText: incoming.text,
       context: messages.slice(-6),
       dedupHash: hash,
-      extra: { conversation_key: conversationKey }
+      extra: { conversation_key: conversationKey, video_url: videoUrl || null }
     });
     if (!row) return null;
     const local = this.store.getInteractionByHash(hash);
@@ -373,6 +390,11 @@ class InteractionManager {
         await driver.openDmPage();
         await driver.openConversation(row.peer);
         await driver.sendMessage(row.draft);
+      } else if (row.platform === 'douyin' && row.kind === 'comment') {
+        const driver = new DouyinCommentDriver(page);
+        const videoUrl = row.extra && row.extra.video_url;
+        if (!videoUrl) throw new Error('评论记录缺少视频地址');
+        await driver.replyOnVideoPage(videoUrl, row.peer, row.incomingText, row.draft);
       } else if (row.platform === 'shipinhao' && row.kind === 'comment') {
         const driver = new ShipinhaoDriver(page);
         await driver.openCommentPage();
