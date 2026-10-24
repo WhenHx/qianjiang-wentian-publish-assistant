@@ -42,7 +42,8 @@ class LocalStore {
       { version: 2, up: db => this.migrateSubjectKeys(db) },
       { version: 3, up: db => this.migrateOutbox(db) },
       { version: 4, up: db => this.migrateInteractions(db) },
-      { version: 5, up: db => this.migrateInteractionCloudId(db) }
+      { version: 5, up: db => this.migrateInteractionCloudId(db) },
+      { version: 6, up: db => { db.exec(`ALTER TABLE interactions ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'`); } }
     ]);
   }
 
@@ -70,12 +71,12 @@ CREATE INDEX idx_interactions_status ON interactions(status);
 `);
   }
 
-  insertInteraction({ id, platform, kind, peer, incomingText, context = [], draft = null, dedupHash, cloudId = null }) {
+  insertInteraction({ id, platform, kind, peer, incomingText, context = [], draft = null, dedupHash, cloudId = null, extra = {} }) {
     const now = nowIso();
-    this.db.prepare(`INSERT INTO interactions (id,platform,kind,peer,incoming_text,context_json,draft,status,dedup_hash,cloud_id,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,'draft_pending',?,?,?,?)
+    this.db.prepare(`INSERT INTO interactions (id,platform,kind,peer,incoming_text,context_json,draft,status,dedup_hash,cloud_id,extra_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,'draft_pending',?,?,?,?,?)
       ON CONFLICT(dedup_hash) DO NOTHING`)
-      .run(id, platform, kind, peer, incomingText, json(context), draft, dedupHash, cloudId, now, now);
+      .run(id, platform, kind, peer, incomingText, json(context), draft, dedupHash, cloudId, json(extra), now, now);
     return this.db.prepare('SELECT * FROM interactions WHERE dedup_hash=?').get(dedupHash);
   }
 
@@ -116,6 +117,7 @@ CREATE INDEX idx_interactions_status ON interactions(status);
       status: row.status,
       dedupHash: row.dedup_hash,
       cloudId: row.cloud_id || null,
+      extra: parseJson(row.extra_json, {}),
       error: parseJson(row.error_json, null),
       createdAt: row.created_at,
       updatedAt: row.updated_at

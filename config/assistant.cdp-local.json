@@ -18,7 +18,7 @@
     "pollIntervalMs": 30000,
     "platforms": {
       "douyin": { "dm": true, "comment": false },
-      "shipinhao": { "dm": true, "comment": false }
+      "shipinhao": { "dm": true, "comment": true }
     },
     "llm": {
       "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",

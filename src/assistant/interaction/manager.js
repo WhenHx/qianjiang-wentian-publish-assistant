@@ -40,6 +40,7 @@ class InteractionManager {
     this.fallbackLlm = this.interactionCfg.llm && this.interactionCfg.llm.fallbackEnabled === true
       ? new LlmClient(this.interactionCfg.llm) : null;
     this.browsers = new Map();
+    this.pages = new Map();
     this.running = false;
     this._timer = null;
   }
@@ -67,6 +68,8 @@ class InteractionManager {
   async stop() {
     this.running = false;
     if (this._timer) clearTimeout(this._timer);
+    for (const p of this.pages.values()) { try { p.close(); } catch {} }
+    this.pages.clear();
     for (const b of this.browsers.values()) await b.close().catch(() => {});
     this.browsers.clear();
   }
@@ -83,6 +86,24 @@ class InteractionManager {
     await browser.launch('about:blank');
     this.browsers.set(platform, browser);
     return browser;
+  }
+
+  // 私信和评论各占一个独立标签页，互不导航干扰
+  async ensurePage(platform, kind) {
+    const key = `${platform}:${kind}`;
+    if (this.pages.has(key)) {
+      const page = this.pages.get(key);
+      try {
+        await page.send('Runtime.evaluate', { expression: '1', returnByValue: true }, 3000);
+        return page;
+      } catch {
+        this.pages.delete(key);
+      }
+    }
+    const browser = await this.ensureBrowser(platform);
+    const page = await browser.newTab('about:blank');
+    this.pages.set(key, page);
+    return page;
   }
 
   accountKeyFor(platform) {
@@ -117,15 +138,15 @@ class InteractionManager {
   }
 
   async pollDm(platform) {
-    const browser = await this.ensureBrowser(platform);
+    const page = await this.ensurePage(platform, 'dm');
     let driver;
     let conversations;
     if (platform === 'douyin') {
-      driver = new DouyinDmDriver(browser.page);
+      driver = new DouyinDmDriver(page);
       await driver.openPanel();
       conversations = await driver.listConversations();
     } else if (platform === 'shipinhao') {
-      driver = new ShipinhaoDriver(browser.page);
+      driver = new ShipinhaoDriver(page);
       await driver.openDmPage();
       conversations = await driver.listConversations();
     } else {
@@ -169,17 +190,40 @@ class InteractionManager {
   }
 
   async pollComments(platform) {
-    const browser = await this.ensureBrowser(platform);
+    const page = await this.ensurePage(platform, 'comment');
+    const results = { detected: 0, replied: 0, leads: 0 };
     if (platform === 'douyin') {
-      const driver = new DouyinCommentDriver(browser.page);
+      const driver = new DouyinCommentDriver(page);
       await driver.openCommentPage();
       await driver.listComments();
       // 评论条目结构待真实评论数据校准
-    } else if (platform === 'shipinhao') {
-      const driver = new ShipinhaoDriver(browser.page);
-      await driver.openCommentPage();
-      await driver.listCommentWorks();
+      return results;
     }
+    if (platform === 'shipinhao') {
+      const driver = new ShipinhaoDriver(page);
+      await driver.openCommentPage();
+      const workName = await driver.openWorkWithComments();
+      this.logger.info('评论轮询', { platform, workName: workName || null });
+      if (!workName) return results;
+      await sleep(4000); // 评论区异步加载
+      const comments = await driver.listComments();
+      this.logger.info('评论读取', { count: comments.length });
+      for (const c of comments) {
+        const hash = dedupHash(platform, 'comment', `${workName}|${c.name}`, c.text);
+        if (this.store.getInteractionByHash(hash)) continue;
+        results.detected += 1;
+        const incoming = { fromMe: false, text: c.text };
+        const row = await this.uploadAndDraft({
+          platform, kind: 'comment', peer: c.name, incoming,
+          messages: [incoming], hash, conversationKey: `${workName}`
+        });
+        if (row && row.draft) results.replied += 1;
+        const lead = await this.maybeCreateLead({ platform, peer: c.name, incoming, hash });
+        if (lead) results.leads += 1;
+      }
+      return results;
+    }
+    return results;
   }
 
   // 上行失败（cloudId 为空）的记录每轮重试，不丢消息
@@ -221,7 +265,8 @@ class InteractionManager {
       platform, kind, peer,
       incomingText: incoming.text,
       context: messages.slice(-6),
-      dedupHash: hash
+      dedupHash: hash,
+      extra: { conversation_key: conversationKey }
     });
     if (!row) return null;
     const local = this.store.getInteractionByHash(hash);
@@ -312,10 +357,10 @@ class InteractionManager {
     if (row.status === 'sent') return row;
     if (row.status === 'discarded') throw new Error('记录已作废，不能发送');
     if (!row.draft) throw new Error('没有可发送的回复内容');
-    const browser = await this.ensureBrowser(row.platform);
     try {
+      const page = await this.ensurePage(row.platform, row.kind);
       if (row.platform === 'douyin' && row.kind === 'dm') {
-        const driver = new DouyinDmDriver(browser.page);
+        const driver = new DouyinDmDriver(page);
         await driver.openPanel();
         await driver.openConversation(row.peer);
         const lastKnown = [...(row.context || [])].reverse().find(m => m.text);
@@ -324,10 +369,17 @@ class InteractionManager {
         }
         await driver.sendMessage(row.draft);
       } else if (row.platform === 'shipinhao' && row.kind === 'dm') {
-        const driver = new ShipinhaoDriver(browser.page);
+        const driver = new ShipinhaoDriver(page);
         await driver.openDmPage();
         await driver.openConversation(row.peer);
         await driver.sendMessage(row.draft);
+      } else if (row.platform === 'shipinhao' && row.kind === 'comment') {
+        const driver = new ShipinhaoDriver(page);
+        await driver.openCommentPage();
+        const workName = row.extra && row.extra.conversation_key;
+        if (!workName || !(await driver.openWorkByName(workName))) throw new Error(`找不到作品: ${workName || '(未记录)'}`);
+        await sleep(4000);
+        await driver.replyComment(row.peer, row.draft);
       } else {
         throw new Error(`${row.platform}/${row.kind} 的发送路径待校准`);
       }

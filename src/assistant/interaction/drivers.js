@@ -51,7 +51,7 @@ class DouyinDmDriver {
   }
 
   async openPanel() {
-    await evaluate(this.page, `location.href = 'https://www.douyin.com/'`);
+    await this.page.send('Page.navigate', { url: 'https://www.douyin.com/' });
     await sleep(6000);
     await clickText(this.page, '消息', { maxY: 60 });
     await sleep(4000);
@@ -211,12 +211,12 @@ class ShipinhaoDriver {
   }
 
   async openDmPage() {
-    await evaluate(this.page, `location.href = 'https://channels.weixin.qq.com/platform/private_msg'`);
+    await this.page.send('Page.navigate', { url: 'https://channels.weixin.qq.com/platform/private_msg' });
     await sleep(8000);
   }
 
   async openCommentPage() {
-    await evaluate(this.page, `location.href = 'https://channels.weixin.qq.com/platform/interaction/comment'`);
+    await this.page.send('Page.navigate', { url: 'https://channels.weixin.qq.com/platform/interaction/comment' });
     await sleep(8000);
   }
 
@@ -324,9 +324,126 @@ class ShipinhaoDriver {
       return [...doc.querySelectorAll('.comment-feed-wrap')].map(w => ({
         name: ((w.querySelector('.feed-info') || {}).innerText || '').trim().slice(0, 60),
         time: ((w.querySelector('.feed-time') || {}).innerText || '').trim(),
-        unread: ((w.querySelector('.unread-comment-number') || {}).innerText || '').trim()
+        unread: ((w.querySelector('.unread-comment-number') || {}).innerText || '').trim(),
+        total: ((w.querySelector('.feed-comment-total') || {}).innerText || '').trim()
       })).filter(w => w.name);
     })()`)) || [];
+  }
+
+  // 打开有评论的作品（评论数 > 0 优先）
+  // 打开有评论的作品（评论数 > 0 优先），返回作品名；没有则 false
+  async openWorkWithComments() {
+    return (await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return false;
+      const items = [...doc.querySelectorAll('.comment-feed-wrap')];
+      const target = items.find(w => { const t = ((w.querySelector('.feed-comment-total') || {}).innerText || '').trim(); return parseInt(t, 10) > 0; });
+      if (!target) return false;
+      target.click();
+      return ((target.querySelector('.feed-info') || {}).innerText || '').trim().slice(0, 60) || true;
+    })()`)) || false;
+  }
+
+  // 按名字打开作品（发送时定位用）
+  async openWorkByName(name) {
+    return (await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return false;
+      const items = [...doc.querySelectorAll('.comment-feed-wrap')];
+      const target = items.find(w => ((w.querySelector('.feed-info') || {}).innerText || '').trim().includes(${JSON.stringify(name.slice(0, 20))}));
+      if (!target) return false;
+      target.click();
+      return true;
+    })()`)) || false;
+  }
+
+  async listComments() {
+    // 条目叶子文本顺序：名字、时间(yyyy/MM/dd)、内容、操作词（点赞/回复/删除…），以时间锚定内容
+    return (await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return [];
+      return [...doc.querySelectorAll('.comment-item')].map(item => {
+        const texts = [...item.querySelectorAll('*')].filter(e => e.children.length === 0 && (e.innerText || '').trim()).map(e => (e.innerText || '').trim());
+        const timeIdx = texts.findIndex(t => /^\\d{4}\\/\\d{2}\\/\\d{2}/.test(t));
+        const name = texts[0] || '';
+        const text = timeIdx > 0 && texts[timeIdx + 1] ? texts[timeIdx + 1] : '';
+        return { name, text, time: timeIdx > 0 ? texts[timeIdx] : '' };
+      }).filter(c => c.name && c.text);
+    })()`)) || [];
+  }
+
+  async replyComment(peer, text) {
+    // 点开目标评论的回复框
+    const opened = await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return false;
+      const item = [...doc.querySelectorAll('.comment-item')].find(i => (i.innerText || '').includes(${JSON.stringify(peer)}));
+      if (!item) return false;
+      const btn = [...item.querySelectorAll('*')].find(e => (e.innerText || '').trim() === '回复');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    if (!opened) throw new Error(`找不到评论或回复入口: ${peer}`);
+    // 回复框可能因重复点击被关掉；确认打开，最多补点一次
+    let boxOpen = false;
+    for (let i = 0; i < 2; i++) {
+      await sleep(2500);
+      boxOpen = await evaluate(this.page, `(() => {
+        const doc = ${SPH_IFRAME_PIERCE};
+        const ta = doc && doc.querySelector('textarea.create-input');
+        return !!(ta && (ta.placeholder || '').includes(${JSON.stringify(peer)}));
+      })()`);
+      if (boxOpen) break;
+      await evaluate(this.page, `(() => {
+        const doc = ${SPH_IFRAME_PIERCE};
+        if (!doc) return;
+        const item = [...doc.querySelectorAll('.comment-item')].find(i2 => (i2.innerText || '').includes(${JSON.stringify(peer)}));
+        const btn = item && [...item.querySelectorAll('*')].find(e => (e.innerText || '').trim() === '回复');
+        if (btn) btn.click();
+      })()`);
+    }
+    if (!boxOpen) throw new Error(`回复框未打开或目标校验失败：预期回复 ${peer}`);
+    // 事件方式填充（React 受控输入，CDP insertText 可能不触发按钮启用）
+    await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      const ta = doc.querySelector('textarea.create-input');
+      ta.focus();
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(ta, ${JSON.stringify(text)});
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    // 发送按钮是 div.tag-wrap 或 button，文字「评论」，可能不止一个；取回复框容器内可用的那个
+    const sendExpr = `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return false;
+      const ta = doc.querySelector('textarea.create-input');
+      if (!ta) return false;
+      let scope = ta;
+      for (let i = 0; i < 6 && scope.parentElement; i++) scope = scope.parentElement;
+      const cands = [...scope.querySelectorAll('button, [class*=btn], [class*=tag-wrap]')]
+        .filter(b => (b.innerText || '').trim() === '评论');
+      const btn = cands.find(b => !b.disabled && !/disabled/.test((b.className || '').toString()));
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`;
+    let sent = false;
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      sent = await evaluate(this.page, sendExpr);
+      if (sent) break;
+      await sleep(500);
+    }
+    if (!sent) throw new Error('「评论」发送按钮不可用');
+    await sleep(3000);
+    // 发送验证：评论区应出现刚发送的内容
+    const verified = await evaluate(this.page, `(() => {
+      const doc = ${SPH_IFRAME_PIERCE};
+      if (!doc) return false;
+      return [...doc.querySelectorAll('.comment-item, .comment-reply-list *')].some(e => (e.innerText || '').trim().startsWith(${JSON.stringify(text.slice(0, 10))}));
+    })()`);
+    if (!verified) throw new Error('回复验证失败：评论区未出现刚发送的内容');
   }
 }
 
@@ -338,7 +455,7 @@ class DouyinCommentDriver {
   }
 
   async openCommentPage() {
-    await evaluate(this.page, `location.href = 'https://creator.douyin.com/creator-micro/interactive/comment'`);
+    await this.page.send('Page.navigate', { url: 'https://creator.douyin.com/creator-micro/interactive/comment' });
     await sleep(8000);
   }
 

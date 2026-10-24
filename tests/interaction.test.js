@@ -74,8 +74,8 @@ function makeManager(store, page, cloud, { autoSend = false } = {}) {
     }
   };
   const mgr = new InteractionManager({ config, store, cloud, logger });
-  const browser = { page, close: async () => {} };
-  mgr.ensureBrowser = async () => browser;
+  mgr.ensurePage = async () => page;
+  mgr.ensureBrowser = async () => ({ page, close: async () => {} });
   mgr.accountKeyFor = () => 'localacct_test';
   return mgr;
 }

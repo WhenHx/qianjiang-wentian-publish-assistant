@@ -165,6 +165,30 @@ class ManagedBrowser {
     throw new Error('未找到浏览器页面目标');
   }
 
+  // 新建独立标签页并返回页面级 CDP 连接（互动模块的私信/评论各占一个标签页，互不导航干扰）
+  async newTab(url = 'about:blank') {
+    const version = await (await fetch(`http://127.0.0.1:${this.port}/json/version`, { signal: AbortSignal.timeout(5000) })).json();
+    const browserWs = new CdpConnection(version.webSocketDebuggerUrl);
+    await browserWs.connect();
+    const { targetId } = await browserWs.send('Target.createTarget', { url });
+    await browserWs.close();
+    const listUrl = `http://127.0.0.1:${this.port}/json/list`;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const targets = await (await fetch(listUrl, { signal: AbortSignal.timeout(2000) })).json();
+      const t = targets.find(x => x.id === targetId);
+      if (t) {
+        const page = new CdpConnection(t.webSocketDebuggerUrl);
+        await page.connect();
+        await page.send('Page.enable');
+        await page.send('Runtime.enable');
+        return page;
+      }
+      await sleep(300);
+    }
+    throw new Error('新建标签页失败');
+  }
+
   async waitForReady({ timeoutMs = 15000 } = {}) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
